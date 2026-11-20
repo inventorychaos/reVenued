@@ -4,6 +4,9 @@ import tempfile
 
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ["ADMIN_KEY"] = "k"
+# Never send real mail from tests: empty values stop .env from filling these in.
+os.environ["MAIL_WEBHOOK_URL"] = ""
+os.environ["SMTP_HOST"] = ""
 
 import app as A  # noqa: E402
 
@@ -63,4 +66,15 @@ r2 = c.post("/register", json={"full_name": "B", "email": "b@example.com",
 bid = [x for x in c.get("/api/attendees", headers=H).get_json() if x["email"] == "b@example.com"][0]["id"]
 assert c.post(f"/api/manual-checkin/{bid}", headers=H).get_json()["ok"]
 assert c.post("/api/checkin", json={"token": r2["token"]}, headers=H).status_code == 409
+
+# verify does not check anyone in
+assert c.post("/api/verify", json={"token": r2["token"]}).status_code == 401
+v = c.post("/api/verify", json={"token": r2["token"]}, headers=H).get_json()
+assert v["valid"] and v["full_name"] == "B"
+assert c.post("/api/verify", json={"token": "bogus"}, headers=H).status_code == 404
+r3 = c.post("/register", json={"full_name": "C", "email": "c@example.com",
+                               "organization": "O", "phone": "5551234567"}).get_json()
+assert c.post("/api/verify", json={"token": r3["token"]}, headers=H).get_json()["checked_in"] == 0
+assert c.post("/api/verify", json={"token": r3["token"]}, headers=H).get_json()["checked_in"] == 0
+assert c.post("/api/checkin", json={"token": r3["token"]}, headers=H).get_json()["status"] == "checked_in"
 print("ALL CHECKS PASSED")

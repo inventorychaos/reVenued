@@ -22,6 +22,7 @@
   <input id="key" type="password" placeholder="Admin key">
   <div id="reader"></div>
   <input id="manual" placeholder="Or scan with a USB barcode scanner / paste code here, then press Enter" autofocus>
+  <label><input type="checkbox" id="verifyOnly" style="width:auto"> Verify only (show details, don't check in)</label>
   <div id="result"></div>
   <div id="count"></div>
 </div>
@@ -37,6 +38,16 @@ async function submit(token) {
   if (!token || busy || (token === lastToken && Date.now() - lastAt < 3000)) return;
   busy = true; lastToken = token; lastAt = Date.now();
   try {
+    if (document.getElementById('verifyOnly').checked) {
+      const v = await fetch('/api/verify', {method:'POST',
+        headers:{'Content-Type':'application/json','X-Admin-Key': keyEl.value}, body: JSON.stringify({token})});
+      if (v.status === 401) return show('bad', 'Wrong admin key');
+      const j = await v.json();
+      if (!j.valid) return show('bad', '✖ Not a valid token');
+      return show(j.checked_in ? 'dup' : 'ok',
+        `✔ Valid: ${j.full_name} · ${j.organization} · ${j.email} · ${j.phone} · ` +
+        (j.checked_in ? `already checked in at ${j.checked_in_at}` : 'not checked in yet'));
+    }
     const r = await fetch('/api/checkin', {method:'POST',
       headers:{'Content-Type':'application/json','X-Admin-Key': keyEl.value},
       body: JSON.stringify({token})});

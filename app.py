@@ -219,6 +219,18 @@ def checkin():
                    organization=row["organization"], message="Checked In")
 
 
+@app.post("/api/verify")
+def verify():
+    """Look up a token WITHOUT checking the attendee in."""
+    require_admin()
+    token = ((request.get_json(silent=True) or {}).get("token") or "").strip()
+    r = db().execute("SELECT full_name,email,organization,phone,registered_at,checked_in,checked_in_at "
+                     "FROM attendees WHERE token=?", (token,)).fetchone()
+    if not r:
+        return jsonify(ok=False, valid=False, message="Unknown token"), 404
+    return jsonify(ok=True, valid=True, **dict(r))
+
+
 COLS = ("id,full_name,email,organization,phone,registered_at,"
         "checked_in,checked_in_at,email_status")
 
