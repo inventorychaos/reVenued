@@ -1,4 +1,9 @@
-"""Attendee storage backends: SQLite (default) or Google Sheets via an Apps Script web app."""
+"""Attendee storage backends.
+
+SqliteStore    - default, a local file.
+PostgresStore  - any hosted Postgres (Neon, Supabase, Render...) via DATABASE_URL.
+SheetsStore    - Google Sheet through the Apps Script web app (optional, needs Google approval).
+"""
 import json
 import sqlite3
 import urllib.request
@@ -18,66 +23,104 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-class SqliteStore:
-    def __init__(self, path):
-        self.path = path
-        with sqlite3.connect(path) as c:
-            c.execute("""CREATE TABLE IF NOT EXISTS attendees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE NOT NULL,
-                full_name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, organization TEXT NOT NULL,
-                phone TEXT NOT NULL, registered_at TEXT NOT NULL,
-                checked_in INTEGER NOT NULL DEFAULT 0, checked_in_at TEXT,
-                email_status TEXT NOT NULL DEFAULT 'pending')""")
+class SqlStore:
+    """Shared logic for SQL databases. Subclasses set PH/ID_COL/INTEGRITY and implement _connect()."""
+    PH = "?"
+    ID_COL = "INTEGER PRIMARY KEY AUTOINCREMENT"
+    INTEGRITY = (sqlite3.IntegrityError,)
 
-    def _q(self, sql, args=(), write=False):
-        c = sqlite3.connect(self.path)
-        c.row_factory = sqlite3.Row
+    def _connect(self):
+        raise NotImplementedError
+
+    def _init(self):
+        self._run(f"""CREATE TABLE IF NOT EXISTS attendees (
+            id {self.ID_COL}, token TEXT UNIQUE NOT NULL,
+            full_name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, organization TEXT NOT NULL,
+            phone TEXT NOT NULL, registered_at TEXT NOT NULL,
+            checked_in INTEGER NOT NULL DEFAULT 0, checked_in_at TEXT,
+            email_status TEXT NOT NULL DEFAULT 'pending')""", write=True)
+
+    def _run(self, sql, args=(), write=False):
+        """Run one statement on a fresh connection. Returns (list of dict rows, rowcount)."""
+        conn = self._connect()
         try:
-            cur = c.execute(sql, args)
+            cur = conn.cursor()
+            cur.execute(sql.replace("?", self.PH), args)
+            rows = []
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            count = cur.rowcount
             if write:
-                c.commit()
-            return cur.fetchall(), cur.rowcount
+                conn.commit()
+            return rows, count
         finally:
-            c.close()
+            conn.close()
 
-    def add(self, name, email, org, phone):
-        token = uuid.uuid4().hex
+    def add(self, name, email, org, phone, token=None, registered_at=None, checked_in=0,
+            checked_in_at=None, email_status="pending"):
+        token = token or uuid.uuid4().hex
         try:
-            self._q("INSERT INTO attendees (token,full_name,email,organization,phone,registered_at) "
-                    "VALUES (?,?,?,?,?,?)", (token, name, email, org, phone, _now()), write=True)
-        except sqlite3.IntegrityError:
+            self._run("INSERT INTO attendees (token,full_name,email,organization,phone,registered_at,"
+                      "checked_in,checked_in_at,email_status) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (token, name, email, org, phone, registered_at or _now(), checked_in,
+                       checked_in_at, email_status), write=True)
+        except self.INTEGRITY:
             raise Duplicate()
         return token
 
     def get_by_token(self, token):
-        rows, _ = self._q("SELECT * FROM attendees WHERE token=?", (token,))
-        return dict(rows[0]) if rows else None
+        rows, _ = self._run("SELECT * FROM attendees WHERE token=?", (token,))
+        return rows[0] if rows else None
 
     def get_by_id(self, aid):
-        rows, _ = self._q("SELECT * FROM attendees WHERE id=?", (aid,))
-        return dict(rows[0]) if rows else None
+        rows, _ = self._run("SELECT * FROM attendees WHERE id=?", (aid,))
+        return rows[0] if rows else None
 
     def checkin(self, token):
-        """Returns (status, row): 'checked_in' | 'duplicate' | 'invalid'. Atomic."""
-        row = self.get_by_token(token)
-        if not row:
+        """Returns (status, row): 'checked_in' | 'duplicate' | 'invalid'. The UPDATE is atomic,
+        so two simultaneous scans of one ticket cannot both succeed."""
+        if not self.get_by_token(token):
             return "invalid", None
-        _, n = self._q("UPDATE attendees SET checked_in=1, checked_in_at=? WHERE token=? AND checked_in=0",
-                       (_now(), token), write=True)
-        row = self.get_by_token(token)
-        return ("checked_in" if n else "duplicate"), row
+        _, n = self._run("UPDATE attendees SET checked_in=1, checked_in_at=? WHERE token=? AND checked_in=0",
+                         (_now(), token), write=True)
+        return ("checked_in" if n else "duplicate"), self.get_by_token(token)
 
     def manual_checkin(self, aid):
-        _, n = self._q("UPDATE attendees SET checked_in=1, checked_in_at=COALESCE(checked_in_at,?) WHERE id=?",
-                       (_now(), aid), write=True)
+        _, n = self._run("UPDATE attendees SET checked_in=1, checked_in_at=COALESCE(checked_in_at,?) WHERE id=?",
+                         (_now(), aid), write=True)
         return bool(n)
 
     def set_email_status(self, token, status):
-        self._q("UPDATE attendees SET email_status=? WHERE token=?", (status, token), write=True)
+        self._run("UPDATE attendees SET email_status=? WHERE token=?", (status, token), write=True)
 
     def list(self, newest_first=True):
-        rows, _ = self._q("SELECT * FROM attendees ORDER BY id " + ("DESC" if newest_first else "ASC"))
-        return [dict(r) for r in rows]
+        rows, _ = self._run("SELECT * FROM attendees ORDER BY id " + ("DESC" if newest_first else "ASC"))
+        return rows
+
+
+class SqliteStore(SqlStore):
+    def __init__(self, path):
+        self.path = path
+        self._init()
+
+    def _connect(self):
+        return sqlite3.connect(self.path)
+
+
+class PostgresStore(SqlStore):
+    PH = "%s"
+    ID_COL = "BIGSERIAL PRIMARY KEY"
+
+    def __init__(self, url):
+        import psycopg  # imported lazily so SQLite users don't need it installed
+        self._psycopg = psycopg
+        self.INTEGRITY = (psycopg.errors.UniqueViolation,)
+        self.url = url
+        self._init()
+
+    def _connect(self):
+        return self._psycopg.connect(self.url, connect_timeout=15)
 
 
 class SheetsStore:

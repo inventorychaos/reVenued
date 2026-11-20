@@ -9,6 +9,7 @@ os.environ["ADMIN_KEY"] = "k"
 for v in ("MAIL_WEBHOOK_URL", "MAIL_WEBHOOK_SECRET", "SMTP_HOST"):
     os.environ[v] = ""
 os.environ["STORE"] = "sqlite"
+os.environ["DATABASE_URL"] = ""
 
 import app as A  # noqa: E402
 from store import SheetsStore  # noqa: E402
@@ -107,6 +108,20 @@ def run(label):
 
 
 run("sqlite")
+
+# migration support: explicit token / check-in state survive, duplicates are rejected
+from store import Duplicate, SqliteStore  # noqa: E402
+m = SqliteStore(os.path.join(tempfile.mkdtemp(), "m.db"))
+m.add("M", "m@example.com", "Org", "5551234567", token="abc123", registered_at="2026-01-01T00:00:00",
+      checked_in=1, checked_in_at="2026-01-02T00:00:00", email_status="sent")
+r = m.get_by_token("abc123")
+assert r["checked_in"] == 1 and r["registered_at"] == "2026-01-01T00:00:00" and r["email_status"] == "sent"
+try:
+    m.add("M2", "m@example.com", "Org", "5551234567")
+    raise AssertionError("duplicate not rejected")
+except Duplicate:
+    pass
+print("[migration helpers] ok")
 
 sheet = FakeSheet()
 A.store = SheetsStore("http://fake", "s")

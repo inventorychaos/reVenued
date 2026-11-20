@@ -19,7 +19,7 @@ import qrcode
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 
-from store import PUBLIC, Duplicate, SheetsStore, SqliteStore
+from store import PUBLIC, Duplicate, PostgresStore, SheetsStore, SqliteStore
 
 BASE = Path(__file__).parent
 load_dotenv(BASE / ".env")  # credentials etc. live in .env (never committed)
@@ -38,12 +38,23 @@ WEBHOOK_SECRET = os.environ.get("MAIL_WEBHOOK_SECRET", "")
 
 app = Flask(__name__)
 
-if os.environ.get("STORE", "sqlite").lower() == "sheets":
-    if not WEBHOOK_URL:
-        raise SystemExit("STORE=sheets needs MAIL_WEBHOOK_URL and MAIL_WEBHOOK_SECRET")
-    store = SheetsStore(WEBHOOK_URL, WEBHOOK_SECRET)
-else:
-    store = SqliteStore(DB_PATH)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+_kind = os.environ.get("STORE", "postgres" if DATABASE_URL else "sqlite").lower()
+
+
+def make_store(kind=_kind):
+    if kind == "postgres":
+        if not DATABASE_URL:
+            raise SystemExit("STORE=postgres needs DATABASE_URL")
+        return PostgresStore(DATABASE_URL)
+    if kind == "sheets":
+        if not WEBHOOK_URL:
+            raise SystemExit("STORE=sheets needs MAIL_WEBHOOK_URL and MAIL_WEBHOOK_SECRET")
+        return SheetsStore(WEBHOOK_URL, WEBHOOK_SECRET)
+    return SqliteStore(DB_PATH)
+
+
+store = make_store()
 
 
 def public(row):

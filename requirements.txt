@@ -3,3 +3,4 @@ qrcode[pil]>=7.4
 python-dotenv>=1.0
 waitress>=3.0
 cryptography>=42.0
+psycopg[binary]>=3.1

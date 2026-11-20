@@ -36,6 +36,15 @@ Browsers only allow the camera on HTTPS or `localhost`. Options:
 - **USB/Bluetooth barcode scanner:** click the text box on `/scanner`; the scanner "types" the code and presses Enter.
 - Lost QR? `/admin` → **Check in** button.
 
+## Online database (Postgres)
+By default data lives in a local SQLite file (`event.db`). To use a hosted database instead:
+1. Create a free project at [Neon](https://neon.tech) (or Supabase / Render Postgres) and copy its connection string.
+2. Put it in `.env` as `DATABASE_URL=postgresql://...?sslmode=require` and restart. Tables are created automatically.
+3. Copy existing attendees over (tokens are kept, so QR codes already emailed still work): `python migrate.py`
+
+Optional: `STORE=sheets` uses a Google Sheet through `apps_script/Code.gs` (set `SHEET_ID` in the script). It needs Google's
+permission approval for the script, which some accounts can't grant, so Postgres is the recommended online option.
+
 ## 3. Deploy
 - **Docker:** `docker build -t event . && docker run -p 8000:8000 -v eventdata:/data --env-file .env event`
 - **Render / Railway / Heroku-style:** uses the `Procfile` (`waitress`). Set the env vars from `.env.example`; attach a persistent disk and set `DB_PATH` to it (SQLite file must persist).
