@@ -1,6 +1,10 @@
 """Event registration + QR ticket + check-in app (Flask + SQLite)."""
+import base64
+import html
 import io
+import json
 import os
+import urllib.request
 import re
 import smtplib
 import sqlite3
@@ -76,6 +80,27 @@ def make_qr_png(token: str) -> bytes:
 def send_ticket_email(name: str, email: str, token: str) -> str:
     """Returns 'sent', or 'saved:<file>' when SMTP isn't configured, or 'failed:<err>'."""
     png = make_qr_png(token)
+
+    webhook = os.environ.get("MAIL_WEBHOOK_URL", "")
+    if webhook:  # Google Apps Script web app that sends via the owner's Gmail (no password needed)
+        payload = {
+            "secret": os.environ.get("MAIL_WEBHOOK_SECRET", ""),
+            "to": email,
+            "subject": f"Your ticket for {EVENT_NAME}",
+            "text": f"Hi {name},\n\nYou're registered for {EVENT_NAME}. Show the attached QR code at check-in.",
+            "html": f"<h2>You're registered, {html.escape(name)}!</h2>"
+                    f"<p>Show this QR code at the entrance of <b>{html.escape(EVENT_NAME)}</b>.</p>"
+                    f'<img src="cid:qr" width="240" height="240" alt="Ticket QR code">',
+            "png": base64.b64encode(png).decode(),
+        }
+        try:
+            req = urllib.request.Request(webhook, json.dumps(payload).encode(),
+                                         {"Content-Type": "text/plain"}, method="POST")
+            res = json.load(urllib.request.urlopen(req, timeout=30))
+            return "sent" if res.get("ok") else f"failed:{res.get('error')}"
+        except Exception as e:  # noqa: BLE001
+            return f"failed:{e}"
+
     msg = EmailMessage()
     msg["Subject"] = f"Your ticket for {EVENT_NAME}"
     msg["From"] = MAIL_FROM

@@ -23,7 +23,9 @@ Open http://localhost:5000/
 3. Put `SMTP_USER`, `SMTP_PASS` (the 16-char password), `MAIL_FROM` in `.env` (see `.env.example`).
 4. Restart, register with your own address, check the inbox. Use **Resend** in `/admin` if it failed.
 
-Without `SMTP_HOST`, emails are saved in `outbox/` as `.eml` (dev mode).
+**No-password alternative (Google Apps Script):** paste `apps_script/Code.gs` into a new project at script.google.com (set `SECRET`), Deploy → New deployment → Web app → Execute as *Me*, access *Anyone*, authorize, then set `MAIL_WEBHOOK_URL` and `MAIL_WEBHOOK_SECRET` in `.env`. Mail is sent from the Google account that owns the script (~100/day on free Gmail). The webhook takes priority over SMTP.
+
+Without `SMTP_HOST` or a webhook, emails are saved in `outbox/` as `.eml` (dev mode).
 Gmail allows ~500 emails/day; for bigger events use SendGrid/Mailgun SMTP (same variables).
 
 ## 2. Phone / tablet scanning
