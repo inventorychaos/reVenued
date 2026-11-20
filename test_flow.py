@@ -1,4 +1,4 @@
-"""End-to-end smoke test, run against BOTH storage backends:
+﻿"""End-to-end smoke test, run against BOTH storage backends:
 SQLite, and the Sheets store talking to an in-process fake of the Apps Script (no network)."""
 import os
 import tempfile
@@ -66,13 +66,14 @@ def run(label):
     assert r.status_code == 400 and len(r.get_json()["errors"]) == 4
 
     r = c.post("/register", json={"full_name": "Test User", "email": "test@example.com",
-                                  "organization": "Acme", "phone": "+1 555 123 4567"})
+                                  "organization": "Acme", "phone": "0917-123-4567"})
     j = r.get_json()
     assert r.status_code == 200 and j["ok"], j
+    assert c.get("/api/attendees", headers={"X-Admin-Key": "k"}).get_json()[0]["phone"] == "+63 917 123 4567"
     token = j["token"]
     assert j["email_status"].startswith("saved"), j  # local outbox, never real mail
     assert c.post("/register", json={"full_name": "X", "email": "test@example.com",
-                                     "organization": "O", "phone": "1234567"}).status_code == 409
+                                     "organization": "O", "phone": "09181234567"}).status_code == 409
 
     png = c.get(f"/ticket/{token}.png").data
     assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 500
@@ -99,13 +100,20 @@ def run(label):
     assert c.post("/api/resend/9999", headers=H).status_code == 404
 
     r2 = c.post("/register", json={"full_name": "B", "email": "b@example.com",
-                                   "organization": "O", "phone": "5551234567"}).get_json()
+                                   "organization": "O", "phone": "09181234567"}).get_json()
     bid = [x for x in c.get("/api/attendees", headers=H).get_json() if x["email"] == "b@example.com"][0]["id"]
     assert c.post(f"/api/manual-checkin/{bid}", headers=H).get_json()["ok"]
     assert c.post("/api/manual-checkin/9999", headers=H).status_code == 404
     assert c.post("/api/checkin", json={"token": r2["token"]}, headers=H).status_code == 409
     print(f"[{label}] all checks passed")
 
+
+for raw in ("09171234567", "0917 123 4567", "0917-123-4567", "+63 917 123 4567", "+639171234567",
+            "639171234567", "9171234567", "(0917) 123.4567"):
+    assert A.normalize_ph_mobile(raw) == "+63 917 123 4567", raw
+for bad in ("", "12345", "0817 123 4567", "+1 555 123 4567", "0917 123 456", "0917 123 45678", "abc", None):
+    assert A.normalize_ph_mobile(bad) is None, bad
+print("[ph phone format] ok")
 
 run("sqlite")
 
@@ -128,3 +136,4 @@ A.store = SheetsStore("http://fake", "s")
 A.store._call = lambda action, **kw: sheet.call(action, **kw)
 run("sheets (fake Apps Script)")
 print("ALL CHECKS PASSED")
+

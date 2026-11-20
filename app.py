@@ -142,6 +142,17 @@ def form():
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+PH_MOBILE_RE = re.compile(r"^(?:\+?63|0)?(9\d{9})$")
+
+
+def normalize_ph_mobile(raw: str):
+    """Philippine mobile -> '+63 9XX XXX XXXX'. Accepts 09171234567, +63 917 123 4567,
+    63917..., 917... (spaces, dashes, dots, parentheses ignored). Returns None if invalid."""
+    m = PH_MOBILE_RE.match(re.sub(r"[\s\-.()]", "", raw or ""))
+    if not m:
+        return None
+    n = m.group(1)
+    return f"+63 {n[:3]} {n[3:6]} {n[6:]}"
 
 
 @app.post("/register")
@@ -159,8 +170,9 @@ def register():
         errors["email"] = "A valid email is required"
     if not org:
         errors["organization"] = "Organization is required"
-    if len(re.sub(r"\D", "", phone)) < 7:
-        errors["phone"] = "A valid contact number is required"
+    phone = normalize_ph_mobile(phone)
+    if not phone:
+        errors["phone"] = "Enter a valid Philippine mobile number, e.g. 0917 123 4567 or +63 917 123 4567"
     if errors:
         return jsonify(ok=False, errors=errors), 400
 
