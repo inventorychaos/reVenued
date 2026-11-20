@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Check-in – {{ event }}</title>
+<style>
+  body{font-family:system-ui,Arial,sans-serif;background:#f4f6fa;margin:0;padding:16px}
+  .wrap{max-width:480px;margin:auto}
+  h1{font-size:1.3rem}
+  input{padding:10px;border:1px solid #ccd;border-radius:8px;font-size:1rem;width:100%;box-sizing:border-box;margin-bottom:8px}
+  button{padding:10px 14px;border:0;border-radius:8px;background:#2f5bea;color:#fff;font-size:1rem;cursor:pointer}
+  #reader{width:100%;margin:12px 0}
+  #result{padding:18px;border-radius:10px;font-size:1.2rem;text-align:center;display:none;margin-top:10px}
+  .ok{background:#d4f5dd;color:#0b6b2a}.dup{background:#fff1c7;color:#7a5a00}.bad{background:#fbd5d5;color:#8a1c1c}
+  #count{color:#667;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Check-in: {{ event }}</h1>
+  <input id="key" type="password" placeholder="Admin key">
+  <div id="reader"></div>
+  <input id="manual" placeholder="Or scan with a USB barcode scanner / paste code here, then press Enter" autofocus>
+  <div id="result"></div>
+  <div id="count"></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script>
+const keyEl = document.getElementById('key'), res = document.getElementById('result'), manual = document.getElementById('manual');
+keyEl.value = localStorage.getItem('adminKey') || '';
+keyEl.addEventListener('change', () => { localStorage.setItem('adminKey', keyEl.value); refresh(); });
+
+let busy = false, lastToken = '', lastAt = 0;
+async function submit(token) {
+  token = token.trim();
+  if (!token || busy || (token === lastToken && Date.now() - lastAt < 3000)) return;
+  busy = true; lastToken = token; lastAt = Date.now();
+  try {
+    const r = await fetch('/api/checkin', {method:'POST',
+      headers:{'Content-Type':'application/json','X-Admin-Key': keyEl.value},
+      body: JSON.stringify({token})});
+    if (r.status === 401) return show('bad', 'Wrong admin key');
+    const j = await r.json();
+    if (j.status === 'checked_in') show('ok', `✔ ${j.name} (${j.organization}) – Checked In`);
+    else if (j.status === 'duplicate') show('dup', `${j.name}: ${j.message}`);
+    else show('bad', j.message || 'Invalid');
+  } catch { show('bad', 'Network error'); }
+  finally { busy = false; refresh(); }
+}
+function show(cls, text) { res.className = cls; res.textContent = text; res.style.display = 'block'; }
+async function refresh() {
+  const r = await fetch('/api/attendees', {headers:{'X-Admin-Key': keyEl.value}});
+  if (!r.ok) return;
+  const a = await r.json();
+  document.getElementById('count').textContent = `${a.filter(x => x.checked_in).length} of ${a.length} checked in`;
+}
+manual.addEventListener('keydown', e => { if (e.key === 'Enter') { submit(manual.value); manual.value = ''; } });
+try {
+  new Html5Qrcode('reader').start({facingMode:'environment'}, {fps:10, qrbox:250}, submit)
+    .catch(() => { document.getElementById('reader').textContent = 'Camera unavailable (needs HTTPS or localhost). Use the box below.'; });
+} catch { document.getElementById('reader').textContent = 'Camera library failed to load. Use the box below.'; }
+refresh();
+</script>
+</body>
+</html>

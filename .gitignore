@@ -1,0 +1,6 @@
+.env
+event.db
+outbox/
+__pycache__/
+*.pyc
+.venv/
