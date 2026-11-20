@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py .
+COPY app.py store.py ./
 COPY templates templates
 ENV PORT=8000 DB_PATH=/data/event.db
 VOLUME /data

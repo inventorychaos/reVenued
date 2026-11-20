@@ -1,29 +1,30 @@
-"""Event registration + QR ticket + check-in app (Flask + SQLite)."""
+"""Event registration + QR ticket + check-in app (Flask).
+
+Storage: SQLite by default, or Google Sheets (STORE=sheets) via an Apps Script web app.
+"""
 import base64
+import csv
 import html
 import io
 import json
 import os
-import urllib.request
 import re
 import smtplib
-import sqlite3
-import uuid
-from datetime import datetime
+import urllib.request
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
 
-import csv
-
 import qrcode
 from dotenv import load_dotenv
-from flask import Flask, Response, abort, g, jsonify, render_template, request, send_file
+from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+
+from store import PUBLIC, Duplicate, SheetsStore, SqliteStore
 
 BASE = Path(__file__).parent
-load_dotenv(BASE / ".env")  # SMTP credentials etc. live in .env (never committed)
+load_dotenv(BASE / ".env")  # credentials etc. live in .env (never committed)
 DB_PATH = Path(os.environ.get("DB_PATH", BASE / "event.db"))
-OUTBOX = BASE / "outbox"          # emails are saved here when SMTP isn't configured
+OUTBOX = BASE / "outbox"          # emails are saved here when no mail backend is configured
 EVENT_NAME = os.environ.get("EVENT_NAME", "My Event 2026")
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")  # protects scanner/admin
 
@@ -32,41 +33,21 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")          # Gmail: use an App Password
 MAIL_FROM = os.environ.get("MAIL_FROM", SMTP_USER or "tickets@example.com")
+WEBHOOK_URL = os.environ.get("MAIL_WEBHOOK_URL", "")      # Apps Script web app (mail + Sheets)
+WEBHOOK_SECRET = os.environ.get("MAIL_WEBHOOK_SECRET", "")
 
 app = Flask(__name__)
 
-
-# ---------- database ----------
-def db():
-    if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-    return g.db
-
-
-@app.teardown_appcontext
-def close_db(_):
-    conn = g.pop("db", None)
-    if conn:
-        conn.close()
+if os.environ.get("STORE", "sqlite").lower() == "sheets":
+    if not WEBHOOK_URL:
+        raise SystemExit("STORE=sheets needs MAIL_WEBHOOK_URL and MAIL_WEBHOOK_SECRET")
+    store = SheetsStore(WEBHOOK_URL, WEBHOOK_SECRET)
+else:
+    store = SqliteStore(DB_PATH)
 
 
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS attendees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                token TEXT UNIQUE NOT NULL,
-                full_name TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                organization TEXT NOT NULL,
-                phone TEXT NOT NULL,
-                registered_at TEXT NOT NULL,
-                checked_in INTEGER NOT NULL DEFAULT 0,
-                checked_in_at TEXT,
-                email_status TEXT NOT NULL DEFAULT 'pending'
-            )"""
-        )
+def public(row):
+    return {k: row[k] for k in PUBLIC}
 
 
 # ---------- QR + email ----------
@@ -78,13 +59,13 @@ def make_qr_png(token: str) -> bytes:
 
 
 def send_ticket_email(name: str, email: str, token: str) -> str:
-    """Returns 'sent', or 'saved:<file>' when SMTP isn't configured, or 'failed:<err>'."""
+    """Returns 'sent', or 'saved:<file>' when no mail backend is configured, or 'failed:<err>'."""
     png = make_qr_png(token)
 
-    webhook = os.environ.get("MAIL_WEBHOOK_URL", "")
-    if webhook:  # Google Apps Script web app that sends via the owner's Gmail (no password needed)
+    if WEBHOOK_URL:  # Google Apps Script web app that sends via the owner's Gmail (no password needed)
         payload = {
-            "secret": os.environ.get("MAIL_WEBHOOK_SECRET", ""),
+            "secret": WEBHOOK_SECRET,
+            "action": "mail",
             "to": email,
             "subject": f"Your ticket for {EVENT_NAME}",
             "text": f"Hi {name},\n\nYou're registered for {EVENT_NAME}. Show the attached QR code at check-in.",
@@ -94,7 +75,7 @@ def send_ticket_email(name: str, email: str, token: str) -> str:
             "png": base64.b64encode(png).decode(),
         }
         try:
-            req = urllib.request.Request(webhook, json.dumps(payload).encode(),
+            req = urllib.request.Request(WEBHOOK_URL, json.dumps(payload).encode(),
                                          {"Content-Type": "text/plain"}, method="POST")
             res = json.load(urllib.request.urlopen(req, timeout=30))
             return "sent" if res.get("ok") else f"failed:{res.get('error')}"
@@ -112,8 +93,8 @@ def send_ticket_email(name: str, email: str, token: str) -> str:
     cid = make_msgid(domain="ticket.local")
     msg.add_alternative(
         f"""<html><body style="font-family:Arial,sans-serif">
-        <h2>You're registered, {name}!</h2>
-        <p>Show this QR code at the entrance of <b>{EVENT_NAME}</b>.</p>
+        <h2>You're registered, {html.escape(name)}!</h2>
+        <p>Show this QR code at the entrance of <b>{html.escape(EVENT_NAME)}</b>.</p>
         <img src="cid:{cid[1:-1]}" width="240" height="240" alt="Ticket QR code">
         </body></html>""",
         subtype="html",
@@ -172,27 +153,25 @@ def register():
     if errors:
         return jsonify(ok=False, errors=errors), 400
 
-    token = uuid.uuid4().hex
     try:
-        db().execute(
-            "INSERT INTO attendees (token, full_name, email, organization, phone, registered_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (token, name, email, org, phone, datetime.now().isoformat(timespec="seconds")),
-        )
-        db().commit()
-    except sqlite3.IntegrityError:
+        token = store.add(name, email, org, phone)
+    except Duplicate:
         return jsonify(ok=False, errors={"email": "This email is already registered"}), 409
+    except Exception as e:  # noqa: BLE001  (e.g. Sheets unreachable)
+        app.logger.error("store.add failed: %s", e)
+        return jsonify(ok=False, errors={"form": "Could not save your registration, please try again."}), 503
 
     status = send_ticket_email(name, email, token)
-    db().execute("UPDATE attendees SET email_status=? WHERE token=?", (status, token))
-    db().commit()
+    try:
+        store.set_email_status(token, status)
+    except Exception as e:  # noqa: BLE001
+        app.logger.error("set_email_status failed: %s", e)
     return jsonify(ok=True, token=token, email_status=status)
 
 
 @app.get("/ticket/<token>.png")
 def ticket_png(token):
-    row = db().execute("SELECT 1 FROM attendees WHERE token=?", (token,)).fetchone()
-    if not row:
+    if not store.get_by_token(token):
         abort(404)
     return send_file(io.BytesIO(make_qr_png(token)), mimetype="image/png")
 
@@ -206,15 +185,12 @@ def scanner():
 def checkin():
     require_admin()
     token = ((request.get_json(silent=True) or {}).get("token") or "").strip()
-    row = db().execute("SELECT * FROM attendees WHERE token=?", (token,)).fetchone()
-    if not row:
+    status, row = store.checkin(token)
+    if status == "invalid":
         return jsonify(ok=False, status="invalid", message="Unknown QR code"), 404
-    if row["checked_in"]:
+    if status == "duplicate":
         return jsonify(ok=False, status="duplicate", name=row["full_name"],
                        message=f"Already checked in at {row['checked_in_at']}"), 409
-    now = datetime.now().isoformat(timespec="seconds")
-    db().execute("UPDATE attendees SET checked_in=1, checked_in_at=? WHERE token=?", (now, token))
-    db().commit()
     return jsonify(ok=True, status="checked_in", name=row["full_name"],
                    organization=row["organization"], message="Checked In")
 
@@ -224,22 +200,17 @@ def verify():
     """Look up a token WITHOUT checking the attendee in."""
     require_admin()
     token = ((request.get_json(silent=True) or {}).get("token") or "").strip()
-    r = db().execute("SELECT full_name,email,organization,phone,registered_at,checked_in,checked_in_at "
-                     "FROM attendees WHERE token=?", (token,)).fetchone()
+    r = store.get_by_token(token)
     if not r:
         return jsonify(ok=False, valid=False, message="Unknown token"), 404
-    return jsonify(ok=True, valid=True, **dict(r))
-
-
-COLS = ("id,full_name,email,organization,phone,registered_at,"
-        "checked_in,checked_in_at,email_status")
+    keep = ("full_name", "email", "organization", "phone", "registered_at", "checked_in", "checked_in_at")
+    return jsonify(ok=True, valid=True, **{k: r[k] for k in keep})
 
 
 @app.get("/api/attendees")
 def attendees():
     require_admin()
-    rows = db().execute(f"SELECT {COLS} FROM attendees ORDER BY id DESC").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([public(r) for r in store.list(newest_first=True)])
 
 
 @app.get("/admin")
@@ -250,11 +221,10 @@ def admin():
 @app.get("/api/attendees.csv")
 def attendees_csv():
     require_admin()
-    rows = db().execute(f"SELECT {COLS} FROM attendees ORDER BY id").fetchall()
     out = io.StringIO()
     w = csv.writer(out)
-    w.writerow(COLS.split(","))
-    w.writerows([tuple(r) for r in rows])
+    w.writerow(PUBLIC)
+    w.writerows([[public(r)[k] for k in PUBLIC] for r in store.list(newest_first=False)])
     return Response(out.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=attendees.csv"})
 
@@ -262,12 +232,11 @@ def attendees_csv():
 @app.post("/api/resend/<int:attendee_id>")
 def resend(attendee_id):
     require_admin()
-    r = db().execute("SELECT * FROM attendees WHERE id=?", (attendee_id,)).fetchone()
+    r = store.get_by_id(attendee_id)
     if not r:
         abort(404)
     status = send_ticket_email(r["full_name"], r["email"], r["token"])
-    db().execute("UPDATE attendees SET email_status=? WHERE id=?", (status, attendee_id))
-    db().commit()
+    store.set_email_status(r["token"], status)
     return jsonify(ok=not status.startswith("failed"), email_status=status)
 
 
@@ -275,17 +244,10 @@ def resend(attendee_id):
 def manual_checkin(attendee_id):
     """Fallback for attendees who lost their QR code."""
     require_admin()
-    r = db().execute("SELECT token FROM attendees WHERE id=?", (attendee_id,)).fetchone()
-    if not r:
+    if not store.manual_checkin(attendee_id):
         abort(404)
-    now = datetime.now().isoformat(timespec="seconds")
-    db().execute("UPDATE attendees SET checked_in=1, checked_in_at=COALESCE(checked_in_at,?) WHERE id=?",
-                 (now, attendee_id))
-    db().commit()
     return jsonify(ok=True)
 
-
-init_db()
 
 if __name__ == "__main__":
     # Phone cameras only work on HTTPS (or localhost). HTTPS=1 serves a self-signed cert

@@ -1,80 +1,115 @@
-"""End-to-end smoke test: register -> QR -> email -> check-in -> duplicate scan."""
+"""End-to-end smoke test, run against BOTH storage backends:
+SQLite, and the Sheets store talking to an in-process fake of the Apps Script (no network)."""
 import os
 import tempfile
 
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ["ADMIN_KEY"] = "k"
-# Never send real mail from tests: empty values stop .env from filling these in.
-os.environ["MAIL_WEBHOOK_URL"] = ""
-os.environ["SMTP_HOST"] = ""
+# Never touch real services from tests: empty values stop .env from filling these in.
+for v in ("MAIL_WEBHOOK_URL", "MAIL_WEBHOOK_SECRET", "SMTP_HOST"):
+    os.environ[v] = ""
+os.environ["STORE"] = "sqlite"
 
 import app as A  # noqa: E402
+from store import SheetsStore  # noqa: E402
 
-c = A.app.test_client()
 
-# validation
-r = c.post("/register", json={"full_name": "", "email": "bad", "organization": "", "phone": "1"})
-assert r.status_code == 400 and len(r.get_json()["errors"]) == 4
+class FakeSheet:
+    """Python mirror of apps_script/Code.gs data actions (stored as strings, like a real Sheet)."""
+    def __init__(self):
+        self.rows = []
 
-# registration
-r = c.post("/register", json={"full_name": "Test User", "email": "test@example.com",
-                              "organization": "Acme", "phone": "+1 555 123 4567"})
-j = r.get_json()
-assert r.status_code == 200 and j["ok"], j
-token = j["token"]
-print("registered, email_status =", j["email_status"])
+    def call(self, action, **kw):
+        def obj(r):
+            return {**r, "id": int(r["id"]), "checked_in": int(r["checked_in"])}
+        find = lambda: next((r for r in self.rows if (kw.get("token") and r["token"] == kw["token"])
+                             or (kw.get("id") and str(r["id"]) == str(kw["id"]))), None)  # noqa: E731
+        if action == "add":
+            if any(r["email"] == kw["email"] for r in self.rows):
+                return {"ok": False, "error": "duplicate"}
+            self.rows.append({"id": str(len(self.rows) + 1), "token": kw["token"], "full_name": kw["full_name"],
+                              "email": kw["email"], "organization": kw["organization"], "phone": kw["phone"],
+                              "registered_at": kw["registered_at"], "checked_in": "0", "checked_in_at": "",
+                              "email_status": "pending"})
+            return {"ok": True, "id": len(self.rows)}
+        if action == "list":
+            return {"ok": True, "rows": [obj(r) for r in self.rows]}
+        r = find()
+        if action == "get":
+            return {"ok": True, "row": obj(r)} if r else {"ok": False}
+        if action == "checkin":
+            if not r:
+                return {"ok": True, "status": "invalid"}
+            if r["checked_in"] == "1":
+                return {"ok": True, "status": "duplicate", "row": obj(r)}
+            r["checked_in"], r["checked_in_at"] = "1", kw["now"]
+            return {"ok": True, "status": "checked_in", "row": obj(r)}
+        if action == "manual":
+            if not r:
+                return {"ok": False}
+            r["checked_in"] = "1"
+            r["checked_in_at"] = r["checked_in_at"] or kw["now"]
+            return {"ok": True}
+        if action == "setstatus":
+            if r:
+                r["email_status"] = kw["status"]
+            return {"ok": bool(r)}
+        raise AssertionError(action)
 
-# duplicate email rejected
-assert c.post("/register", json={"full_name": "X", "email": "test@example.com",
-                                 "organization": "O", "phone": "1234567"}).status_code == 409
 
-# QR image is a real PNG
-png = c.get(f"/ticket/{token}.png").data
-assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 500
-print("QR png bytes:", len(png))
+def run(label):
+    c = A.app.test_client()
+    H = {"X-Admin-Key": "k"}
 
-# email has embedded image
-if j["email_status"].startswith("saved"):
+    r = c.post("/register", json={"full_name": "", "email": "bad", "organization": "", "phone": "1"})
+    assert r.status_code == 400 and len(r.get_json()["errors"]) == 4
+
+    r = c.post("/register", json={"full_name": "Test User", "email": "test@example.com",
+                                  "organization": "Acme", "phone": "+1 555 123 4567"})
+    j = r.get_json()
+    assert r.status_code == 200 and j["ok"], j
+    token = j["token"]
+    assert j["email_status"].startswith("saved"), j  # local outbox, never real mail
+    assert c.post("/register", json={"full_name": "X", "email": "test@example.com",
+                                     "organization": "O", "phone": "1234567"}).status_code == 409
+
+    png = c.get(f"/ticket/{token}.png").data
+    assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 500
+    assert c.get("/ticket/nope.png").status_code == 404
     eml = (A.OUTBOX / f"{token}.eml").read_bytes()
     assert b"image/png" in eml and b"cid:" in eml
-    print("email saved with embedded QR:", j["email_status"])
 
-# auth
-assert c.post("/api/checkin", json={"token": token}).status_code == 401
-H = {"X-Admin-Key": "k"}
-assert c.post("/api/checkin", json={"token": "nope"}, headers=H).status_code == 404
+    assert c.post("/api/checkin", json={"token": token}).status_code == 401
+    assert c.post("/api/checkin", json={"token": "nope"}, headers=H).status_code == 404
+    v = c.post("/api/verify", json={"token": token}, headers=H).get_json()
+    assert v["valid"] and v["checked_in"] == 0                       # verify never checks in
+    assert c.post("/api/verify", json={"token": "bogus"}, headers=H).status_code == 404
+    assert c.post("/api/checkin", json={"token": token}, headers=H).get_json()["status"] == "checked_in"
+    r = c.post("/api/checkin", json={"token": token}, headers=H)
+    assert r.status_code == 409 and r.get_json()["status"] == "duplicate"
 
-# check in, then duplicate
-r = c.post("/api/checkin", json={"token": token}, headers=H)
-assert r.get_json()["status"] == "checked_in", r.get_json()
-r = c.post("/api/checkin", json={"token": token}, headers=H)
-assert r.status_code == 409 and r.get_json()["status"] == "duplicate"
+    rows = c.get("/api/attendees", headers=H).get_json()
+    assert rows[0]["checked_in"] == 1 and "token" not in rows[0]
+    assert c.get("/admin").status_code == 200
+    assert c.get("/api/attendees.csv").status_code == 401
+    assert "test@example.com" in c.get("/api/attendees.csv", headers=H).data.decode()
+    aid = rows[0]["id"]
+    assert c.post(f"/api/resend/{aid}", headers=H).get_json()["ok"]
+    assert c.post("/api/resend/9999", headers=H).status_code == 404
 
-rows = c.get("/api/attendees", headers=H).get_json()
-assert rows[0]["checked_in"] == 1
+    r2 = c.post("/register", json={"full_name": "B", "email": "b@example.com",
+                                   "organization": "O", "phone": "5551234567"}).get_json()
+    bid = [x for x in c.get("/api/attendees", headers=H).get_json() if x["email"] == "b@example.com"][0]["id"]
+    assert c.post(f"/api/manual-checkin/{bid}", headers=H).get_json()["ok"]
+    assert c.post("/api/manual-checkin/9999", headers=H).status_code == 404
+    assert c.post("/api/checkin", json={"token": r2["token"]}, headers=H).status_code == 409
+    print(f"[{label}] all checks passed")
 
-# admin: page, csv, resend, manual check-in
-assert c.get("/admin").status_code == 200
-assert c.get("/api/attendees.csv").status_code == 401
-csv_text = c.get("/api/attendees.csv", headers=H).data.decode()
-assert "test@example.com" in csv_text
-aid = rows[0]["id"]
-assert c.post(f"/api/resend/{aid}", headers=H).get_json()["ok"]
-assert c.post(f"/api/resend/9999", headers=H).status_code == 404
-r2 = c.post("/register", json={"full_name": "B", "email": "b@example.com",
-                               "organization": "O", "phone": "5551234567"}).get_json()
-bid = [x for x in c.get("/api/attendees", headers=H).get_json() if x["email"] == "b@example.com"][0]["id"]
-assert c.post(f"/api/manual-checkin/{bid}", headers=H).get_json()["ok"]
-assert c.post("/api/checkin", json={"token": r2["token"]}, headers=H).status_code == 409
 
-# verify does not check anyone in
-assert c.post("/api/verify", json={"token": r2["token"]}).status_code == 401
-v = c.post("/api/verify", json={"token": r2["token"]}, headers=H).get_json()
-assert v["valid"] and v["full_name"] == "B"
-assert c.post("/api/verify", json={"token": "bogus"}, headers=H).status_code == 404
-r3 = c.post("/register", json={"full_name": "C", "email": "c@example.com",
-                               "organization": "O", "phone": "5551234567"}).get_json()
-assert c.post("/api/verify", json={"token": r3["token"]}, headers=H).get_json()["checked_in"] == 0
-assert c.post("/api/verify", json={"token": r3["token"]}, headers=H).get_json()["checked_in"] == 0
-assert c.post("/api/checkin", json={"token": r3["token"]}, headers=H).get_json()["status"] == "checked_in"
+run("sqlite")
+
+sheet = FakeSheet()
+A.store = SheetsStore("http://fake", "s")
+A.store._call = lambda action, **kw: sheet.call(action, **kw)
+run("sheets (fake Apps Script)")
 print("ALL CHECKS PASSED")

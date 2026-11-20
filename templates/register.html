@@ -44,7 +44,7 @@ f.addEventListener('submit', async e => {
       body: JSON.stringify(Object.fromEntries(new FormData(f)))});
     const j = await r.json();
     if (!j.ok) {
-      for (const [k,v] of Object.entries(j.errors||{})) document.querySelector(`[data-for="${k}"]`).textContent = v;
+      for (const [k,v] of Object.entries(j.errors||{})) (document.querySelector(`[data-for="${k}"]`) || document.getElementById('general')).textContent = v;
       return;
     }
     f.style.display = 'none';
