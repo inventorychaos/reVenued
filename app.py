@@ -155,6 +155,11 @@ def require_admin():
 
 
 # ---------- routes ----------
+@app.get("/healthz")
+def healthz():
+    return "ok"  # used by the host's health check; deliberately touches no database
+
+
 @app.get("/config.js")
 def config_js():
     cfg = json.dumps({"API_BASE": "", "EVENT_NAME": EVENT_NAME})

@@ -1,0 +1,27 @@
+# Render Blueprint: deploys the Flask backend (also serves the pages itself).
+# Secret values are NOT stored here. Render asks for the ones marked `sync: false` when you apply the blueprint.
+services:
+  - type: web
+    name: revenued
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: waitress-serve --host=0.0.0.0 --port=$PORT app:app
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: EVENT_NAME
+        value: reVenued 2026
+      - key: ALLOWED_ORIGINS            # the GitHub Pages site may call this API
+        value: https://inventorychaos.github.io
+      - key: CHECK_EMAIL_DNS
+        value: "1"
+      - key: DATABASE_URL               # Neon connection string
+        sync: false
+      - key: ADMIN_KEY                  # protects /scanner, /admin and the API
+        sync: false
+      - key: MAIL_WEBHOOK_URL           # Apps Script web app that sends the emails
+        sync: false
+      - key: MAIL_WEBHOOK_SECRET
+        sync: false

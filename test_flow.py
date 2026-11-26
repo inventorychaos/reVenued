@@ -105,6 +105,7 @@ def run(label):
     for page in ("/", "/scanner", "/admin", "/style.css", "/config.js", "/index.html"):
         assert c.get(page).status_code == 200, page
     assert b"EVENT_NAME" in c.get("/config.js").data
+    assert c.get("/healthz").data == b"ok"
     css = c.get("/style.css").data.decode().lower()
     assert "gradient" not in css and "800000" in css                     # flat maroon, no gradients
     A.ALLOWED_ORIGINS = {"https://pages.example"}
