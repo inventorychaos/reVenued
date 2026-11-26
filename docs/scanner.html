@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Check-in</title>
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+</head>
+<body>
+<header><h1 id="ev">Check-in</h1><nav><a href="index.html">Register</a><a href="admin.html">Admin</a></nav></header>
+<main>
+  <label for="key">Admin key</label>
+  <input id="key" type="password" autocomplete="off">
+  <div id="reader"></div>
+  <label for="manual">USB scanner or paste a code, then press Enter</label>
+  <input id="manual" autocomplete="off" autofocus>
+  <div class="row"><label style="margin:0;font-weight:400"><input type="checkbox" id="verifyOnly">Verify only (show details, don't check in)</label></div>
+  <div id="result" class="box" role="status"></div>
+  <p id="count" class="muted"></p>
+</main>
+<script>
+var API = CONFIG.API_BASE, keyEl = document.getElementById('key'), res = document.getElementById('result'), manual = document.getElementById('manual');
+document.title = 'Check-in: ' + CONFIG.EVENT_NAME;
+document.getElementById('ev').textContent = 'Check-in: ' + CONFIG.EVENT_NAME;
+try { keyEl.value = localStorage.getItem('adminKey') || ''; } catch (e) {}
+keyEl.addEventListener('change', function () { try { localStorage.setItem('adminKey', keyEl.value); } catch (e) {} refresh(); });
+
+var busy = false, lastToken = '', lastAt = 0;
+function show(cls, text) { res.className = 'box ' + cls; res.textContent = text; }
+function post(path, token) {
+  return fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Key': keyEl.value }, body: JSON.stringify({ token: token }) });
+}
+function submit(token) {
+  token = token.trim();
+  if (!token || busy || (token === lastToken && Date.now() - lastAt < 3000)) return;
+  busy = true; lastToken = token; lastAt = Date.now();
+  var verify = document.getElementById('verifyOnly').checked;
+  post(verify ? '/api/verify' : '/api/checkin', token).then(function (r) {
+    if (r.status === 401) { show('bad', 'Wrong admin key'); return; }
+    return r.json().then(function (j) {
+      if (verify) {
+        if (!j.valid) return show('bad', 'Not a valid token');
+        return show(j.checked_in ? 'dup' : 'ok', 'Valid: ' + j.full_name + ' | ' + j.organization + ' | ' + j.email + ' | ' + j.phone + ' | ' +
+          (j.checked_in ? 'already checked in at ' + j.checked_in_at : 'not checked in yet'));
+      }
+      if (j.status === 'checked_in') show('ok', j.name + ' (' + j.organization + '): Checked In');
+      else if (j.status === 'duplicate') show('dup', j.name + ': ' + j.message);
+      else show('bad', j.message || 'Invalid');
+    });
+  }).catch(function () { show('bad', 'Network error'); })
+    .then(function () { busy = false; refresh(); });
+}
+function refresh() {
+  fetch(API + '/api/attendees', { headers: { 'X-Admin-Key': keyEl.value } }).then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (a) { if (a) document.getElementById('count').textContent = a.filter(function (x) { return x.checked_in; }).length + ' of ' + a.length + ' checked in'; })
+    .catch(function () {});
+}
+manual.addEventListener('keydown', function (e) { if (e.key === 'Enter') { submit(manual.value); manual.value = ''; } });
+
+// Camera library is loaded only on this page
+var s = document.createElement('script');
+s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js';
+s.onload = function () {
+  new Html5Qrcode('reader').start({ facingMode: 'environment' }, { fps: 10, qrbox: 250 }, submit)
+    .catch(function () { document.getElementById('reader').textContent = 'Camera unavailable (needs HTTPS or localhost). Use the box below.'; });
+};
+s.onerror = function () { document.getElementById('reader').textContent = 'Camera library failed to load. Use the box below.'; };
+document.head.appendChild(s);
+refresh();
+</script>
+</body>
+</html>

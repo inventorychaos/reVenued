@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin</title>
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+</head>
+<body>
+<header><h1 id="ev">Admin</h1><nav><a href="index.html">Register</a><a href="scanner.html">Scanner</a></nav></header>
+<main class="wide">
+  <div class="row">
+    <input id="key" type="password" placeholder="Admin key" aria-label="Admin key" autocomplete="off">
+    <input id="q" placeholder="Search name, email, organization" aria-label="Search">
+    <button id="csv" class="alt">Export CSV</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><b id="s-total">0</b>Registered</div>
+    <div class="stat"><b id="s-in">0</b>Checked in</div>
+    <div class="stat"><b id="s-fail">0</b>Email failed</div>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Name</th><th>Email</th><th>Organization</th><th>Phone</th><th>Registered</th><th>Status</th><th>Email</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+</main>
+<script>
+var API = CONFIG.API_BASE, keyEl = document.getElementById('key'), q = document.getElementById('q'), data = [];
+document.title = 'Admin: ' + CONFIG.EVENT_NAME;
+document.getElementById('ev').textContent = 'Admin: ' + CONFIG.EVENT_NAME;
+try { keyEl.value = localStorage.getItem('adminKey') || ''; } catch (e) {}
+keyEl.addEventListener('change', function () { try { localStorage.setItem('adminKey', keyEl.value); } catch (e) {} load(); });
+q.addEventListener('input', render);
+function H() { return { 'X-Admin-Key': keyEl.value }; }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+function load() {
+  fetch(API + '/api/attendees', { headers: H() }).then(function (r) {
+    if (!r.ok) { document.getElementById('rows').innerHTML = '<tr><td colspan="8">Enter the correct admin key.</td></tr>'; return; }
+    return r.json().then(function (j) { data = j; render(); });
+  }).catch(function () { document.getElementById('rows').innerHTML = '<tr><td colspan="8">Cannot reach the server.</td></tr>'; });
+}
+function render() {
+  var t = q.value.toLowerCase();
+  var list = data.filter(function (a) { return !t || [a.full_name, a.email, a.organization].join(' ').toLowerCase().indexOf(t) > -1; });
+  document.getElementById('s-total').textContent = data.length;
+  document.getElementById('s-in').textContent = data.filter(function (a) { return a.checked_in; }).length;
+  document.getElementById('s-fail').textContent = data.filter(function (a) { return String(a.email_status).indexOf('failed') === 0; }).length;
+  document.getElementById('rows').innerHTML = list.map(function (a) {
+    return '<tr><td>' + esc(a.full_name) + '</td><td>' + esc(a.email) + '</td><td>' + esc(a.organization) + '</td><td>' + esc(a.phone) + '</td>' +
+      '<td>' + esc(a.registered_at) + '</td>' +
+      '<td class="' + (a.checked_in ? 'in' : 'out') + '">' + (a.checked_in ? 'Checked in ' + esc(a.checked_in_at) : 'Not yet') + '</td>' +
+      '<td title="' + esc(a.email_status) + '">' + esc(String(a.email_status).split(':')[0]) + '</td>' +
+      '<td><button class="alt" data-act="resend" data-id="' + a.id + '">Resend</button> ' +
+      (a.checked_in ? '' : '<button class="alt" data-act="manual" data-id="' + a.id + '">Check in</button>') + '</td></tr>';
+  }).join('');
+}
+document.getElementById('rows').addEventListener('click', function (e) {
+  var b = e.target.closest('button'); if (!b) return;
+  var id = b.getAttribute('data-id');
+  if (b.getAttribute('data-act') === 'resend') {
+    fetch(API + '/api/resend/' + id, { method: 'POST', headers: H() }).then(function (r) { return r.json(); })
+      .then(function (j) { alert(j.ok ? 'Email: ' + String(j.email_status).split(':')[0] : 'Failed: ' + j.email_status); load(); });
+  } else if (confirm('Check in without a QR scan?')) {
+    fetch(API + '/api/manual-checkin/' + id, { method: 'POST', headers: H() }).then(load);
+  }
+});
+document.getElementById('csv').onclick = function () {
+  fetch(API + '/api/attendees.csv', { headers: H() }).then(function (r) {
+    if (!r.ok) { alert('Wrong admin key'); return; }
+    return r.blob().then(function (b) { var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'attendees.csv'; a.click(); });
+  });
+};
+load(); setInterval(load, 10000);
+</script>
+</body>
+</html>

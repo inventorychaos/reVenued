@@ -9,6 +9,22 @@ Flask + SQLite. Register → unique QR → emailed ticket → scan at the door.
 | `/scanner` | Check-in (camera or USB scanner). Needs admin key |
 | `/admin` | Attendee list, stats, search, resend email, manual check-in, CSV export. Needs admin key |
 
+## Static site (GitHub Pages)
+The three pages live in `docs/` (plain HTML + one 3 KB `style.css`, flat maroon theme, no frameworks). The Flask app serves them
+itself, and the same folder can be published with GitHub Pages (Settings → Pages → Deploy from branch → `main` / `/docs`).
+
+GitHub Pages only hosts static files, so the **backend must be hosted separately** (Render, Railway, a VPS... see Deploy below). Then:
+1. Set `API_BASE` in `docs/config.js` to the backend URL (no trailing slash) and commit.
+2. On the backend set `ALLOWED_ORIGINS=https://<user>.github.io` so the browser may call it (CORS).
+
+Pages on a free GitHub account requires a public repository. No secrets are stored in the repo (`.env` is git-ignored).
+
+## Validation
+- **Email:** strict syntax check (local part, domain, real TLD, no `..`, length limits) on the page and again on the server, plus a
+  DNS check that the domain can receive mail (rejects non-existent domains and null-MX domains; it never blocks anyone if DNS itself
+  is down). Turn the DNS part off with `CHECK_EMAIL_DNS=0`.
+- **Phone:** Philippine mobile only, saved as `+63 9XX XXX XXXX`.
+
 ## Run locally
 ```bash
 pip install -r requirements.txt

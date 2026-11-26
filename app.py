@@ -17,7 +17,7 @@ from pathlib import Path
 
 import qrcode
 from dotenv import load_dotenv
-from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+from flask import Flask, Response, abort, jsonify, request, send_file
 
 from store import PUBLIC, Duplicate, PostgresStore, SheetsStore, SqliteStore
 
@@ -36,7 +36,26 @@ MAIL_FROM = os.environ.get("MAIL_FROM", SMTP_USER or "tickets@example.com")
 WEBHOOK_URL = os.environ.get("MAIL_WEBHOOK_URL", "")      # Apps Script web app (mail + Sheets)
 WEBHOOK_SECRET = os.environ.get("MAIL_WEBHOOK_SECRET", "")
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=str(BASE / "docs"), static_url_path="")  # the same pages GitHub Pages serves
+# Origins allowed to call the API from a browser (e.g. the GitHub Pages site), comma separated.
+ALLOWED_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()}
+
+
+@app.after_request
+def cors(resp):
+    origin = request.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Key"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Vary"] = "Origin"
+    return resp
+
+
+@app.before_request
+def preflight():
+    if request.method == "OPTIONS":
+        return "", 204
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 _kind = os.environ.get("STORE", "postgres" if DATABASE_URL else "sqlite").lower()
@@ -136,12 +155,55 @@ def require_admin():
 
 
 # ---------- routes ----------
+@app.get("/config.js")
+def config_js():
+    cfg = json.dumps({"API_BASE": "", "EVENT_NAME": EVENT_NAME})
+    return Response(f"window.CONFIG = {cfg};", mimetype="application/javascript")
+
+
 @app.get("/")
 def form():
-    return render_template("register.html", event=EVENT_NAME)
+    return app.send_static_file("index.html")
 
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@"                       # local part
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")  # domain with a real TLD
+CHECK_EMAIL_DNS = os.environ.get("CHECK_EMAIL_DNS", "1") != "0"
+
+
+def email_syntax_ok(email: str) -> bool:
+    if len(email) > 254 or not EMAIL_RE.match(email):
+        return False
+    local = email.rsplit("@", 1)[0]
+    return not (".." in email or local.startswith(".") or local.endswith("."))
+
+
+def domain_accepts_mail(domain: str) -> bool:
+    """False only when DNS says the domain can't receive mail (doesn't exist, or null-MX).
+    Fails open on DNS timeouts/outages so a network blip never blocks a real attendee."""
+    if not CHECK_EMAIL_DNS:
+        return True
+    try:
+        import dns.resolver
+        res = dns.resolver.Resolver()
+        res.lifetime = 3
+        try:
+            return any(str(r.exchange).rstrip(".") != "" for r in res.resolve(domain, "MX"))
+        except dns.resolver.NoAnswer:       # no MX record: mail falls back to the A/AAAA record
+            for rtype in ("A", "AAAA"):
+                try:
+                    res.resolve(domain, rtype)
+                    return True
+                except dns.resolver.NoAnswer:
+                    continue
+            return False
+        except dns.resolver.NXDOMAIN:
+            return False
+    except Exception:  # noqa: BLE001  (timeout, no nameservers, dnspython missing...)
+        return True
+
+
 PH_MOBILE_RE = re.compile(r"^(?:\+?63|0)?(9\d{9})$")
 
 
@@ -166,8 +228,10 @@ def register():
     errors = {}
     if not name:
         errors["full_name"] = "Full name is required"
-    if not EMAIL_RE.match(email):
-        errors["email"] = "A valid email is required"
+    if not email_syntax_ok(email):
+        errors["email"] = "Enter a valid email address, e.g. name@example.com"
+    elif not domain_accepts_mail(email.rsplit("@", 1)[1]):
+        errors["email"] = "That email domain can't receive mail. Please check the spelling."
     if not org:
         errors["organization"] = "Organization is required"
     phone = normalize_ph_mobile(phone)
@@ -201,7 +265,7 @@ def ticket_png(token):
 
 @app.get("/scanner")
 def scanner():
-    return render_template("scanner.html", event=EVENT_NAME)
+    return app.send_static_file("scanner.html")
 
 
 @app.post("/api/checkin")
@@ -238,7 +302,7 @@ def attendees():
 
 @app.get("/admin")
 def admin():
-    return render_template("admin.html", event=EVENT_NAME)
+    return app.send_static_file("admin.html")
 
 
 @app.get("/api/attendees.csv")

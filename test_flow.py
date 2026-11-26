@@ -10,6 +10,7 @@ for v in ("MAIL_WEBHOOK_URL", "MAIL_WEBHOOK_SECRET", "SMTP_HOST"):
     os.environ[v] = ""
 os.environ["STORE"] = "sqlite"
 os.environ["DATABASE_URL"] = ""
+os.environ["CHECK_EMAIL_DNS"] = "0"   # tests must not depend on real DNS
 
 import app as A  # noqa: E402
 from store import SheetsStore  # noqa: E402
@@ -72,6 +73,15 @@ def run(label):
     assert c.get("/api/attendees", headers={"X-Admin-Key": "k"}).get_json()[0]["phone"] == "+63 917 123 4567"
     token = j["token"]
     assert j["email_status"].startswith("saved"), j  # local outbox, never real mail
+    for bad in ("not-an-email", "a@b", "a..b@example.com"):
+        r = c.post("/register", json={"full_name": "N", "email": bad, "organization": "O", "phone": "09171234567"})
+        assert r.status_code == 400 and "email" in r.get_json()["errors"], bad
+    _d = A.domain_accepts_mail
+    A.domain_accepts_mail = lambda d: False                     # domain that cannot receive mail
+    r = c.post("/register", json={"full_name": "N", "email": "a@nowhere.test", "organization": "O",
+                                  "phone": "09171234567"})
+    assert r.status_code == 400 and "can't receive mail" in r.get_json()["errors"]["email"]
+    A.domain_accepts_mail = _d
     assert c.post("/register", json={"full_name": "X", "email": "test@example.com",
                                      "organization": "O", "phone": "09181234567"}).status_code == 409
 
@@ -92,7 +102,17 @@ def run(label):
 
     rows = c.get("/api/attendees", headers=H).get_json()
     assert rows[0]["checked_in"] == 1 and "token" not in rows[0]
-    assert c.get("/admin").status_code == 200
+    for page in ("/", "/scanner", "/admin", "/style.css", "/config.js", "/index.html"):
+        assert c.get(page).status_code == 200, page
+    assert b"EVENT_NAME" in c.get("/config.js").data
+    css = c.get("/style.css").data.decode().lower()
+    assert "gradient" not in css and "800000" in css                     # flat maroon, no gradients
+    A.ALLOWED_ORIGINS = {"https://pages.example"}
+    pre = c.options("/register", headers={"Origin": "https://pages.example"})
+    assert pre.status_code == 204 and pre.headers["Access-Control-Allow-Origin"] == "https://pages.example"
+    assert "X-Admin-Key" in pre.headers["Access-Control-Allow-Headers"]
+    assert "Access-Control-Allow-Origin" not in c.options("/register", headers={"Origin": "https://evil.example"}).headers
+    A.ALLOWED_ORIGINS = set()
     assert c.get("/api/attendees.csv").status_code == 401
     assert "test@example.com" in c.get("/api/attendees.csv", headers=H).data.decode()
     aid = rows[0]["id"]
@@ -114,6 +134,55 @@ for raw in ("09171234567", "0917 123 4567", "0917-123-4567", "+63 917 123 4567",
 for bad in ("", "12345", "0817 123 4567", "+1 555 123 4567", "0917 123 456", "0917 123 45678", "abc", None):
     assert A.normalize_ph_mobile(bad) is None, bad
 print("[ph phone format] ok")
+
+# ---- email validation ----
+for ok in ("a@example.com", "first.last@sub.example.co.ph", "a+tag@example.org", "x_y-z@ex-ample.com"):
+    assert A.email_syntax_ok(ok), ok
+for bad in ("", "plain", "a@b", "a@b.c", "a@@example.com", "a b@example.com", "@example.com", "a@.com",
+            "a..b@example.com", ".a@example.com", "a.@example.com", "a@-example.com", "a@example..com",
+            "a@example.c0m", "x" * 65 + "@example.com", "a@" + "x" * 250 + ".com"):
+    assert not A.email_syntax_ok(bad), bad
+
+import dns.exception  # noqa: E402
+import dns.resolver  # noqa: E402
+
+
+class FakeAns:
+    def __init__(self, exchange):
+        self.exchange = exchange
+
+
+class FakeResolver:
+    lifetime = 0
+
+    def resolve(self, domain, rtype):
+        if domain == "nodomain.test":
+            raise dns.resolver.NXDOMAIN()
+        if domain == "slow.test":
+            raise dns.exception.Timeout()
+        if rtype == "MX":
+            if domain == "good.test":
+                return [FakeAns("mail.good.test.")]
+            if domain == "null.test":
+                return [FakeAns(".")]
+            raise dns.resolver.NoAnswer()          # nomx.test / noaddr.test
+        if rtype in ("A", "AAAA") and domain == "nomx.test":
+            return ["192.0.2.1"]
+        raise dns.resolver.NoAnswer()
+
+
+_real = dns.resolver.Resolver
+dns.resolver.Resolver = FakeResolver
+A.CHECK_EMAIL_DNS = True
+assert A.domain_accepts_mail("good.test")            # has MX
+assert A.domain_accepts_mail("nomx.test")            # no MX but an address record
+assert A.domain_accepts_mail("slow.test")            # DNS outage: fail open
+assert not A.domain_accepts_mail("nodomain.test")    # does not exist
+assert not A.domain_accepts_mail("null.test")        # null MX: accepts no mail
+assert not A.domain_accepts_mail("noaddr.test")      # nothing at all
+dns.resolver.Resolver = _real
+A.CHECK_EMAIL_DNS = False
+print("[email validation] ok")
 
 run("sqlite")
 

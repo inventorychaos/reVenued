@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Event registration">
+<title>Register</title>
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+</head>
+<body>
+<header><h1 id="ev">Event registration</h1></header>
+<main>
+  <form id="f" novalidate>
+    <h2>Register</h2>
+    <p class="sub">Your QR ticket will be sent to your email.</p>
+    <label for="full_name">Full Name</label>
+    <input id="full_name" name="full_name" required maxlength="120" autocomplete="name">
+    <div class="err" data-for="full_name"></div>
+    <label for="email">Email Address</label>
+    <input id="email" name="email" type="email" required maxlength="254" autocomplete="email" inputmode="email">
+    <div class="err" data-for="email"></div>
+    <label for="organization">Organization</label>
+    <input id="organization" name="organization" required maxlength="120" autocomplete="organization">
+    <div class="err" data-for="organization"></div>
+    <label for="phone">Contact Number (PH mobile)</label>
+    <input id="phone" name="phone" type="tel" required maxlength="20" autocomplete="tel" inputmode="tel" placeholder="0917 123 4567">
+    <div class="err" data-for="phone"></div>
+    <button id="btn" class="full">Register</button>
+    <div class="err" id="general"></div>
+  </form>
+  <div id="done">
+    <h2>You're registered!</h2>
+    <p id="msg"></p>
+    <img id="qr" alt="Your QR ticket" width="220" height="220">
+  </div>
+</main>
+<script>
+var API = CONFIG.API_BASE, f = document.getElementById('f'), btn = document.getElementById('btn');
+document.title = 'Register: ' + CONFIG.EVENT_NAME;
+document.getElementById('ev').textContent = CONFIG.EVENT_NAME;
+var EMAIL = /^[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]{1,64}@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
+var PH = /^(?:\+?63|0)?9\d{9}$/;
+function err(k, v) { var e = document.querySelector('[data-for="' + k + '"]') || document.getElementById('general'); e.textContent = v; }
+
+f.addEventListener('submit', function (e) {
+  e.preventDefault();
+  document.querySelectorAll('.err').forEach(function (x) { x.textContent = ''; });
+  var d = {}; new FormData(f).forEach(function (v, k) { d[k] = String(v).trim(); });
+  var bad = false, em = d.email.toLowerCase();
+  if (!d.full_name) { err('full_name', 'Full name is required'); bad = true; }
+  if (!EMAIL.test(em) || em.indexOf('..') > -1 || em.charAt(0) === '.' || em.indexOf('.@') > -1) { err('email', 'Enter a valid email address, e.g. name@example.com'); bad = true; }
+  if (!d.organization) { err('organization', 'Organization is required'); bad = true; }
+  if (!PH.test(d.phone.replace(/[\s\-.()]/g, ''))) { err('phone', 'Enter a valid Philippine mobile number, e.g. 0917 123 4567'); bad = true; }
+  if (bad) return;
+  btn.disabled = true; btn.textContent = 'Submitting...';
+  fetch(API + '/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j.ok) { for (var k in (j.errors || {})) err(k, j.errors[k]); return; }
+      f.style.display = 'none';
+      document.getElementById('done').style.display = 'block';
+      document.getElementById('qr').src = API + '/ticket/' + j.token + '.png';
+      document.getElementById('msg').textContent = j.email_status === 'sent'
+        ? 'A confirmation email with your QR ticket is on its way.'
+        : 'We could not email your ticket. Please save this QR code.';
+    })
+    .catch(function () { err('general', 'Network error, please try again.'); })
+    .then(function () { btn.disabled = false; btn.textContent = 'Register'; });
+});
+</script>
+</body>
+</html>
