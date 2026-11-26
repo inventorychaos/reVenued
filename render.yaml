@@ -6,7 +6,9 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: waitress-serve --host=0.0.0.0 --port=$PORT app:app
+    # waitress must trust Render's proxy so it sees each visitor's real IP (needed for per-IP rate limits);
+    # the service is only reachable through Render's proxy, so trusting it is safe here.
+    startCommand: waitress-serve --host=0.0.0.0 --port=$PORT --trusted-proxy='*' --trusted-proxy-count=1 --trusted-proxy-headers='x-forwarded-for x-forwarded-proto' app:app
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION

@@ -11,6 +11,7 @@ for v in ("MAIL_WEBHOOK_URL", "MAIL_WEBHOOK_SECRET", "SMTP_HOST"):
 os.environ["STORE"] = "sqlite"
 os.environ["DATABASE_URL"] = ""
 os.environ["CHECK_EMAIL_DNS"] = "0"   # tests must not depend on real DNS
+os.environ["TRUST_PROXY"] = "1"       # exercise the X-Forwarded-For handling
 for _k in ("RATE_API", "RATE_REGISTER", "RATE_REGISTER_GLOBAL", "RATE_AUTHFAIL"):
     os.environ[_k] = "100000/60"        # effectively unlimited for the functional tests; limits are tested below
 

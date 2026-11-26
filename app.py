@@ -55,9 +55,10 @@ limiter = RateLimiter()
 
 app = Flask(__name__, static_folder=str(BASE / "docs"), static_url_path="")  # the same pages GitHub Pages serves
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024   # no request body over 16 KB
-if os.environ.get("TRUST_PROXY", "1") != "0":
-    # Behind Render's proxy the real client IP is in X-Forwarded-For. Trust only the last PROXY_HOPS entries,
-    # which the proxy itself appended, so a visitor cannot fake their address. Set TRUST_PROXY=0 if exposed directly.
+if os.environ.get("TRUST_PROXY", "0") == "1":
+    # Only for servers that don't handle proxy headers themselves. (waitress is told to trust the proxy through its
+    # --trusted-proxy flags, see render.yaml, and strips the headers, so leave this off there.) Trusts only the last
+    # PROXY_HOPS entries of X-Forwarded-For, which the proxy appended, so a visitor cannot fake their address.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=int(os.environ.get("PROXY_HOPS", "1")))
 # Origins allowed to call the API from a browser (e.g. the GitHub Pages site), comma separated.
 ALLOWED_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()}

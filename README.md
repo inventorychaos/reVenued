@@ -75,7 +75,7 @@ Settings are environment variables (or a `.env` file). **Never commit `.env`**; 
 | `ALLOWED_ORIGINS` | Sites allowed to call the API from a browser, comma separated (e.g. your GitHub Pages URL) | empty |
 | `CHECK_EMAIL_DNS` | `0` turns off the mail-domain DNS check | `1` |
 | `RATE_API`, `RATE_REGISTER`, `RATE_REGISTER_GLOBAL`, `RATE_AUTHFAIL` | Rate limits as `max/seconds` | `120/60`, `10/600`, `120/3600`, `10/600` |
-| `TRUST_PROXY`, `PROXY_HOPS` | Read the client IP from `X-Forwarded-For` (needed behind a proxy such as Render) | `1`, `1` |
+| `TRUST_PROXY`, `PROXY_HOPS` | Read the client IP from `X-Forwarded-For`. Only for servers that don't handle proxy headers themselves (see note below) | `0`, `1` |
 | `PORT`, `HTTPS`, `DB_PATH` | Port, self-signed HTTPS for LAN camera tests, SQLite file path | `5000`, off, `event.db` |
 
 ### Email through Google Apps Script (no password needed)
@@ -99,6 +99,12 @@ and `Procfile` are also included for other hosts. Free plans sleep when idle, so
 
 **Static pages (GitHub Pages).** Publish the `docs/` folder (Settings → Pages → `main` / `/docs`). Set `API_BASE` in
 `docs/config.js` to your backend URL and set `ALLOWED_ORIGINS` on the backend to your Pages address.
+
+**Per-IP rate limits behind a proxy.** Hosts such as Render put a proxy in front of your app, and waitress hides the visitor's real
+address unless told to trust that proxy. That is why `render.yaml` and the `Procfile` start waitress with
+`--trusted-proxy='*' --trusted-proxy-count=1 --trusted-proxy-headers='x-forwarded-for x-forwarded-proto'`. Only use `*` when the
+app is reachable solely through the host's proxy. Check what the limiter sees at `GET /api/client-ip` (admin key): it should be
+your own public address. If it shows a proxy address instead, raise `--trusted-proxy-count`.
 
 **Phone cameras** only work on HTTPS (or `localhost`). Hosted deployments have HTTPS; for a local network test run
 `HTTPS=1 python app.py` and accept the one-time certificate warning.
