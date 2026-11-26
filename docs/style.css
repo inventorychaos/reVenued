@@ -40,3 +40,4 @@ th{background:var(--maroon);color:#fff;font-weight:600}
 td.in{color:var(--ok);font-weight:600}
 td.out{color:#777}
 .muted{color:#666;font-size:.85rem}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}

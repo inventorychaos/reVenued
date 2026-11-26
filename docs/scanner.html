@@ -39,6 +39,7 @@ function submit(token) {
   var verify = document.getElementById('verifyOnly').checked;
   post(verify ? '/api/verify' : '/api/checkin', token).then(function (r) {
     if (r.status === 401) { show('bad', 'Wrong admin key'); return; }
+    if (r.status === 429) { show('bad', 'Too many requests. Wait a moment, then try again.'); return; }
     return r.json().then(function (j) {
       if (verify) {
         if (!j.valid) return show('bad', 'Not a valid token');

@@ -11,6 +11,8 @@ for v in ("MAIL_WEBHOOK_URL", "MAIL_WEBHOOK_SECRET", "SMTP_HOST"):
 os.environ["STORE"] = "sqlite"
 os.environ["DATABASE_URL"] = ""
 os.environ["CHECK_EMAIL_DNS"] = "0"   # tests must not depend on real DNS
+for _k in ("RATE_API", "RATE_REGISTER", "RATE_REGISTER_GLOBAL", "RATE_AUTHFAIL"):
+    os.environ[_k] = "100000/60"        # effectively unlimited for the functional tests; limits are tested below
 
 import app as A  # noqa: E402
 from store import SheetsStore  # noqa: E402
@@ -205,5 +207,71 @@ sheet = FakeSheet()
 A.store = SheetsStore("http://fake", "s")
 A.store._call = lambda action, **kw: sheet.call(action, **kw)
 run("sheets (fake Apps Script)")
+# ---- ticket email content ----
+from emailtpl import build_email  # noqa: E402
+
+subj, text, page = build_email("Gala 2026", "Ana <b>Cruz</b>", "Org & Co", "ana@example.com", "cid:qr",
+                               date="Dec 5, 2026", venue="Hall A", contact="help@example.com")
+assert "Gala 2026" in subj and "QR" in subj
+for needle in ("Present the QR code", "check-in desk", "Org & Co", "ana@example.com", "Dec 5, 2026", "Hall A",
+               "help@example.com", "Each ticket works once", "share or post"):
+    assert needle in text, needle
+assert "&lt;b&gt;Cruz&lt;/b&gt;" in page and "<b>Cruz</b>" not in page      # name is HTML-escaped
+assert "Org &amp; Co" in page and 'src="cid:qr"' in page and "#800000" in page
+assert "gradient" not in page.lower()
+_, text2, _ = build_email("Gala", "A", "B", "a@example.com", "cid:qr")
+assert "Date:" not in text2 and "Venue:" not in text2 and "Ask the host" in text2   # optional parts omitted
+print("[ticket email] ok")
+
+# ---- rate limiting and abuse protection ----
+from ratelimit import RateLimiter, parse_rate  # noqa: E402
+
+assert parse_rate("10/600") == (10, 600)
+now = [0.0]
+rl = RateLimiter(clock=lambda: now[0])
+assert [rl.check("k", 3, 60) for _ in range(3)] == [0, 0, 0]
+assert rl.check("k", 3, 60) >= 1 and rl.blocked("k", 3, 60) >= 1       # 4th is refused
+assert rl.check("other", 3, 60) == 0                                   # other keys unaffected
+now[0] = 61.0
+assert rl.check("k", 3, 60) == 0                                       # window slides, allowed again
+
+c = A.app.test_client()
+H = {"X-Admin-Key": "k"}
+junk = {"full_name": "", "email": "", "organization": "", "phone": ""}
+
+A.limiter = RateLimiter(); A.RATES["register"] = (2, 600)
+codes = [c.post("/register", json=junk).status_code for _ in range(3)]
+assert codes == [400, 400, 429], codes
+r = c.post("/register", json=junk)
+assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1 and "Too many" in r.get_json()["errors"]["form"]
+assert c.post("/register", json=junk, environ_overrides={"REMOTE_ADDR": "5.5.5.5"}).status_code == 400  # other IP fine
+A.RATES["register"] = (100000, 60)
+
+A.limiter = RateLimiter(); A.RATES["register_global"] = (1, 3600)
+assert c.post("/register", json=junk).status_code == 400
+assert c.post("/register", json=junk, environ_overrides={"REMOTE_ADDR": "6.6.6.6"}).status_code == 429  # all visitors share it
+A.RATES["register_global"] = (100000, 60)
+
+A.limiter = RateLimiter(); A.RATES["api"] = (3, 60)
+assert [c.get("/api/attendees", headers=H).status_code for _ in range(4)] == [200, 200, 200, 429]
+assert c.get("/healthz").status_code == 200 and c.get("/style.css").status_code == 200   # health + static exempt
+A.RATES["api"] = (100000, 60)
+
+A.limiter = RateLimiter(); A.RATES["authfail"] = (3, 600)
+assert [c.get("/api/attendees", headers={"X-Admin-Key": "bad"}).status_code for _ in range(4)] == [401, 401, 401, 429]
+assert c.get("/api/attendees", headers=H).status_code == 429           # even the right key is locked out for now
+assert c.get("/api/attendees", headers=H, environ_overrides={"REMOTE_ADDR": "7.7.7.7"}).status_code == 200
+A.RATES["authfail"] = (100000, 60)
+
+A.limiter = RateLimiter()
+seen = c.get("/api/client-ip", headers={**H, "X-Forwarded-For": "9.9.9.9, 1.2.3.4"}).get_json()
+assert seen["seen_ip"] == "1.2.3.4", seen                              # a faked first entry is ignored
+
+before = len(A.store.list())
+r = c.post("/register", json={"full_name": "Bot", "email": "bot@example.com", "organization": "O",
+                              "phone": "09171234567", "website": "http://spam"})
+assert r.status_code == 200 and r.get_json()["ok"] and len(A.store.list()) == before   # honeypot: nothing saved
+assert c.post("/register", data="x" * 20000, content_type="application/json").status_code == 413
+print("[rate limits / honeypot / size cap] ok")
 print("ALL CHECKS PASSED")
 

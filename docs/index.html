@@ -26,6 +26,7 @@
     <label for="phone">Contact Number (PH mobile)</label>
     <input id="phone" name="phone" type="tel" required maxlength="20" autocomplete="tel" inputmode="tel" placeholder="0917 123 4567">
     <div class="err" data-for="phone"></div>
+    <div class="hp" aria-hidden="true"><label>Leave this field empty<input name="website" tabindex="-1" autocomplete="off"></label></div>
     <button id="btn" class="full">Register</button>
     <div class="err" id="general"></div>
   </form>
@@ -62,8 +63,8 @@ f.addEventListener('submit', function (e) {
       document.getElementById('done').style.display = 'block';
       document.getElementById('qr').src = API + '/ticket/' + j.token + '.png';
       document.getElementById('msg').textContent = j.email_status === 'sent'
-        ? 'A confirmation email with your QR ticket is on its way.'
-        : 'We could not email your ticket. Please save this QR code.';
+        ? 'Your QR ticket is on its way to your email. Present this QR code to the host at check-in to be verified. Keep it private: each ticket works once.'
+        : 'We could not email your ticket. Please save this QR code and present it to the host at check-in.';
     })
     .catch(function () { err('general', 'Network error, please try again.'); })
     .then(function () { btn.disabled = false; btn.textContent = 'Register'; });

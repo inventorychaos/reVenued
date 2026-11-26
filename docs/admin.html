@@ -38,7 +38,7 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function
 
 function load() {
   fetch(API + '/api/attendees', { headers: H() }).then(function (r) {
-    if (!r.ok) { document.getElementById('rows').innerHTML = '<tr><td colspan="8">Enter the correct admin key.</td></tr>'; return; }
+    if (!r.ok) { document.getElementById('rows').innerHTML = '<tr><td colspan="8">' + (r.status === 429 ? 'Too many attempts. Wait a few minutes.' : 'Enter the correct admin key.') + '</td></tr>'; return; }
     return r.json().then(function (j) { data = j; render(); });
   }).catch(function () { document.getElementById('rows').innerHTML = '<tr><td colspan="8">Cannot reach the server.</td></tr>'; });
 }

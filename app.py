@@ -4,13 +4,14 @@ Storage: SQLite by default, or Google Sheets (STORE=sheets) via an Apps Script w
 """
 import base64
 import csv
-import html
+import hmac
 import io
 import json
 import os
 import re
 import smtplib
 import urllib.request
+import uuid
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
@@ -18,7 +19,10 @@ from pathlib import Path
 import qrcode
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, jsonify, request, send_file
+from werkzeug.middleware.proxy_fix import ProxyFix
 
+from emailtpl import build_email
+from ratelimit import RateLimiter, parse_rate
 from store import PUBLIC, Duplicate, PostgresStore, SheetsStore, SqliteStore
 
 BASE = Path(__file__).parent
@@ -36,7 +40,25 @@ MAIL_FROM = os.environ.get("MAIL_FROM", SMTP_USER or "tickets@example.com")
 WEBHOOK_URL = os.environ.get("MAIL_WEBHOOK_URL", "")      # Apps Script web app (mail + Sheets)
 WEBHOOK_SECRET = os.environ.get("MAIL_WEBHOOK_SECRET", "")
 
+EVENT_DATE = os.environ.get("EVENT_DATE", "")        # optional, shown in the ticket email
+EVENT_VENUE = os.environ.get("EVENT_VENUE", "")      # optional, shown in the ticket email
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "")  # optional, "need help?" line in the ticket email
+
+# Rate limits, "max requests/seconds" per client IP (override with env vars of the same name).
+RATES = {
+    "api": parse_rate(os.environ.get("RATE_API", "120/60")),                   # every API call
+    "register": parse_rate(os.environ.get("RATE_REGISTER", "10/600")),         # form submissions
+    "register_global": parse_rate(os.environ.get("RATE_REGISTER_GLOBAL", "120/3600")),  # all visitors together
+    "authfail": parse_rate(os.environ.get("RATE_AUTHFAIL", "10/600")),         # wrong admin keys
+}
+limiter = RateLimiter()
+
 app = Flask(__name__, static_folder=str(BASE / "docs"), static_url_path="")  # the same pages GitHub Pages serves
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024   # no request body over 16 KB
+if os.environ.get("TRUST_PROXY", "1") != "0":
+    # Behind Render's proxy the real client IP is in X-Forwarded-For. Trust only the last PROXY_HOPS entries,
+    # which the proxy itself appended, so a visitor cannot fake their address. Set TRUST_PROXY=0 if exposed directly.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=int(os.environ.get("PROXY_HOPS", "1")))
 # Origins allowed to call the API from a browser (e.g. the GitHub Pages site), comma separated.
 ALLOWED_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()}
 
@@ -56,6 +78,31 @@ def cors(resp):
 def preflight():
     if request.method == "OPTIONS":
         return "", 204
+
+
+def too_many(retry):
+    resp = jsonify(ok=False, errors={"form": f"Too many requests. Please wait {retry} seconds and try again."})
+    resp.status_code = 429
+    resp.headers["Retry-After"] = str(retry)
+    return resp
+
+
+@app.before_request
+def throttle():
+    """Per-IP limits so a flood of requests can't overwhelm the server, the database or the email quota."""
+    if request.method == "OPTIONS" or request.endpoint in (None, "static", "healthz"):
+        return None
+    ip = request.remote_addr or "?"
+    retry = limiter.check("api:" + ip, *RATES["api"])
+    if not retry and request.method == "POST" and request.path == "/register":
+        retry = limiter.check("reg:" + ip, *RATES["register"]) or limiter.check("reg:all", *RATES["register_global"])
+    return too_many(retry) if retry else None
+
+
+@app.errorhandler(413)
+def too_large(_):
+    return jsonify(ok=False, errors={"form": "Request too large."}), 413
+
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 _kind = os.environ.get("STORE", "postgres" if DATABASE_URL else "sqlite").lower()
@@ -88,20 +135,23 @@ def make_qr_png(token: str) -> bytes:
     return buf.getvalue()
 
 
-def send_ticket_email(name: str, email: str, token: str) -> str:
+def ticket_email_parts(name, org, email, img_src):
+    return build_email(EVENT_NAME, name, org, email, img_src, EVENT_DATE, EVENT_VENUE, CONTACT_EMAIL)
+
+
+def send_ticket_email(name: str, org: str, email: str, token: str) -> str:
     """Returns 'sent', or 'saved:<file>' when no mail backend is configured, or 'failed:<err>'."""
     png = make_qr_png(token)
 
     if WEBHOOK_URL:  # Google Apps Script web app that sends via the owner's Gmail (no password needed)
+        subject, text, page = ticket_email_parts(name, org, email, "cid:qr")
         payload = {
             "secret": WEBHOOK_SECRET,
             "action": "mail",
             "to": email,
-            "subject": f"Your ticket for {EVENT_NAME}",
-            "text": f"Hi {name},\n\nYou're registered for {EVENT_NAME}. Show the attached QR code at check-in.",
-            "html": f"<h2>You're registered, {html.escape(name)}!</h2>"
-                    f"<p>Show this QR code at the entrance of <b>{html.escape(EVENT_NAME)}</b>.</p>"
-                    f'<img src="cid:qr" width="240" height="240" alt="Ticket QR code">',
+            "subject": subject,
+            "text": text,
+            "html": page,
             "png": base64.b64encode(png).decode(),
         }
         try:
@@ -112,23 +162,14 @@ def send_ticket_email(name: str, email: str, token: str) -> str:
         except Exception as e:  # noqa: BLE001
             return f"failed:{e}"
 
+    cid = make_msgid(domain="ticket.local")
+    subject, text, page = ticket_email_parts(name, org, email, f"cid:{cid[1:-1]}")
     msg = EmailMessage()
-    msg["Subject"] = f"Your ticket for {EVENT_NAME}"
+    msg["Subject"] = subject
     msg["From"] = MAIL_FROM
     msg["To"] = email
-    msg.set_content(
-        f"Hi {name},\n\nYou're registered for {EVENT_NAME}. "
-        f"Show the attached QR code at check-in.\n"
-    )
-    cid = make_msgid(domain="ticket.local")
-    msg.add_alternative(
-        f"""<html><body style="font-family:Arial,sans-serif">
-        <h2>You're registered, {html.escape(name)}!</h2>
-        <p>Show this QR code at the entrance of <b>{html.escape(EVENT_NAME)}</b>.</p>
-        <img src="cid:{cid[1:-1]}" width="240" height="240" alt="Ticket QR code">
-        </body></html>""",
-        subtype="html",
-    )
+    msg.set_content(text)
+    msg.add_alternative(page, subtype="html")
     msg.get_payload()[1].add_related(png, "image", "png", cid=cid, filename="ticket.png")
 
     if not SMTP_HOST:
@@ -149,8 +190,13 @@ def send_ticket_email(name: str, email: str, token: str) -> str:
 
 # ---------- auth helper ----------
 def require_admin():
+    ip = request.remote_addr or "?"
+    retry = limiter.blocked("authfail:" + ip, *RATES["authfail"])   # too many wrong keys: lock out for a while
+    if retry:
+        abort(too_many(retry))
     key = request.headers.get("X-Admin-Key") or request.args.get("key", "")
-    if key != ADMIN_KEY:
+    if not hmac.compare_digest(key.encode(), ADMIN_KEY.encode()):
+        limiter.hit("authfail:" + ip)
         abort(401)
 
 
@@ -225,6 +271,8 @@ def normalize_ph_mobile(raw: str):
 @app.post("/register")
 def register():
     data = request.get_json(silent=True) or request.form
+    if (data.get("website") or "").strip():   # hidden honeypot field: only bots fill it in
+        return jsonify(ok=True, token=uuid.uuid4().hex, email_status="sent")   # pretend success, save nothing
     name = (data.get("full_name") or "").strip()
     email = (data.get("email") or "").strip().lower()
     org = (data.get("organization") or "").strip()
@@ -253,7 +301,7 @@ def register():
         app.logger.error("store.add failed: %s", e)
         return jsonify(ok=False, errors={"form": "Could not save your registration, please try again."}), 503
 
-    status = send_ticket_email(name, email, token)
+    status = send_ticket_email(name, org, email, token)
     try:
         store.set_email_status(token, status)
     except Exception as e:  # noqa: BLE001
@@ -305,6 +353,13 @@ def attendees():
     return jsonify([public(r) for r in store.list(newest_first=True)])
 
 
+@app.get("/api/client-ip")
+def client_ip_debug():
+    """Admin-only: shows the address the rate limiter sees, to confirm proxy settings after a deploy."""
+    require_admin()
+    return jsonify(seen_ip=request.remote_addr, x_forwarded_for=request.headers.get("X-Forwarded-For", ""))
+
+
 @app.get("/admin")
 def admin():
     return app.send_static_file("admin.html")
@@ -327,7 +382,7 @@ def resend(attendee_id):
     r = store.get_by_id(attendee_id)
     if not r:
         abort(404)
-    status = send_ticket_email(r["full_name"], r["email"], r["token"])
+    status = send_ticket_email(r["full_name"], r["organization"], r["email"], r["token"])
     store.set_email_status(r["token"], status)
     return jsonify(ok=not status.startswith("failed"), email_status=status)
 
