@@ -102,9 +102,10 @@ and `Procfile` are also included for other hosts. Free plans sleep when idle, so
 
 **Per-IP rate limits behind a proxy.** Hosts such as Render put a proxy in front of your app, and waitress hides the visitor's real
 address unless told to trust that proxy. That is why `render.yaml` and the `Procfile` start waitress with
-`--trusted-proxy='*' --trusted-proxy-count=1 --trusted-proxy-headers='x-forwarded-for x-forwarded-proto'`. Only use `*` when the
-app is reachable solely through the host's proxy. Check what the limiter sees at `GET /api/client-ip` (admin key): it should be
-your own public address. If it shows a proxy address instead, raise `--trusted-proxy-count`.
+`--trusted-proxy='*' --trusted-proxy-count=3 --trusted-proxy-headers='x-forwarded-for x-forwarded-proto'`. The count is the number of
+proxy hops in front of the app (on Render: Cloudflare, Render's internal proxy and the router, so 3; a single-proxy host needs 1).
+Only use `*` when the app is reachable solely through the host's proxy. Check what the limiter sees at `GET /api/client-ip`
+(admin key): `seen_ip` must be your own public address. If it shows a proxy address, adjust `--trusted-proxy-count`.
 
 **Phone cameras** only work on HTTPS (or `localhost`). Hosted deployments have HTTPS; for a local network test run
 `HTTPS=1 python app.py` and accept the one-time certificate warning.

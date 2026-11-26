@@ -6,9 +6,10 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    # waitress must trust Render's proxy so it sees each visitor's real IP (needed for per-IP rate limits);
-    # the service is only reachable through Render's proxy, so trusting it is safe here.
-    startCommand: waitress-serve --host=0.0.0.0 --port=$PORT --trusted-proxy='*' --trusted-proxy-count=1 --trusted-proxy-headers='x-forwarded-for x-forwarded-proto' app:app
+    # waitress must trust Render's proxies so it sees each visitor's real IP (needed for per-IP rate limits).
+    # Behind Render there are 3 hops (Cloudflare, Render's internal proxy, then the app), hence count=3. The service is
+    # only reachable through them, so trusting them is safe. Verify with GET /api/client-ip (admin key).
+    startCommand: waitress-serve --host=0.0.0.0 --port=$PORT --trusted-proxy='*' --trusted-proxy-count=3 --trusted-proxy-headers='x-forwarded-for x-forwarded-proto' app:app
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
