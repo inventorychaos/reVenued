@@ -32,11 +32,12 @@ class FakeSheet:
         if action == "add":
             if any(r["email"] == kw["email"] for r in self.rows):
                 return {"ok": False, "error": "duplicate"}
-            self.rows.append({"id": str(len(self.rows) + 1), "token": kw["token"], "full_name": kw["full_name"],
+            nid = max([int(x["id"]) for x in self.rows] + [0]) + 1      # unique among current rows (mirrors Code.gs)
+            self.rows.append({"id": str(nid), "token": kw["token"], "full_name": kw["full_name"],
                               "email": kw["email"], "organization": kw["organization"], "phone": kw["phone"],
                               "registered_at": kw["registered_at"], "checked_in": "0", "checked_in_at": "",
                               "email_status": "pending"})
-            return {"ok": True, "id": len(self.rows)}
+            return {"ok": True, "id": nid}
         if action == "list":
             return {"ok": True, "rows": [obj(r) for r in self.rows]}
         r = find()
@@ -54,6 +55,11 @@ class FakeSheet:
                 return {"ok": False}
             r["checked_in"] = "1"
             r["checked_in_at"] = r["checked_in_at"] or kw["now"]
+            return {"ok": True}
+        if action == "delete":
+            if not r:
+                return {"ok": False}
+            self.rows.remove(r)
             return {"ok": True}
         if action == "setstatus":
             if r:
@@ -131,6 +137,26 @@ def run(label):
     assert c.post(f"/api/manual-checkin/{bid}", headers=H).get_json()["ok"]
     assert c.post("/api/manual-checkin/9999", headers=H).status_code == 404
     assert c.post("/api/checkin", json={"token": r2["token"]}, headers=H).status_code == 409
+    # ---- delete ----
+    def reg(email):
+        return c.post("/register", json={"full_name": "Del Me", "email": email, "organization": "O",
+                                         "phone": "09181234567"})
+    d = reg("delete-me@example.com").get_json()
+    did = [x for x in c.get("/api/attendees", headers=H).get_json() if x["email"] == "delete-me@example.com"][0]["id"]
+    assert c.post(f"/api/delete/{did}").status_code == 401                                   # admin key required
+    assert c.post(f"/api/delete/{did}", headers=H).get_json()["ok"]
+    assert c.post(f"/api/delete/{did}", headers=H).status_code == 404                        # already gone
+    assert c.post("/api/delete/999999", headers=H).status_code == 404
+    assert c.get(f"/ticket/{d['token']}.png").status_code == 404                             # ticket image gone
+    assert c.post("/api/checkin", json={"token": d["token"]}, headers=H).status_code == 404  # ticket no longer valid
+    assert c.post("/api/verify", json={"token": d["token"]}, headers=H).status_code == 404
+    assert not any(x["email"] == "delete-me@example.com" for x in c.get("/api/attendees", headers=H).get_json())
+    again = reg("delete-me@example.com")                                                     # email can register again
+    assert again.status_code == 200 and again.get_json()["token"] != d["token"]
+    newid = [x for x in c.get("/api/attendees", headers=H).get_json() if x["email"] == "delete-me@example.com"][0]["id"]
+    if label.startswith("sqlite"):
+        assert newid != did                          # SQLite/Postgres never reuse an id (a sheet may reuse the newest one)
+    assert 'data-act="delete"' in c.get("/admin.html").data.decode()               # the button exists on the page
     print(f"[{label}] all checks passed")
 
 

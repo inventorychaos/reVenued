@@ -20,6 +20,8 @@ button:hover,.btn:hover{background:var(--dark)}
 button:disabled{opacity:.6;cursor:default}
 button.alt,.btn.alt{background:#fff;color:var(--maroon)}
 button.alt:hover{background:var(--tint)}
+button.danger{color:var(--bad);border-color:var(--bad)}
+button.danger:hover{background:var(--bad);color:#fff}
 .full{width:100%;margin-top:20px}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
 .row input{width:auto;flex:1 1 200px;margin:0}

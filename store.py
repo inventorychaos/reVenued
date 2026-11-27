@@ -94,6 +94,11 @@ class SqlStore:
     def set_email_status(self, token, status):
         self._run("UPDATE attendees SET email_status=? WHERE token=?", (status, token), write=True)
 
+    def delete(self, aid):
+        """Permanently remove an attendee. Their ticket stops working and the email can register again."""
+        _, n = self._run("DELETE FROM attendees WHERE id=?", (aid,), write=True)
+        return bool(n)
+
     def list(self, newest_first=True):
         rows, _ = self._run("SELECT * FROM attendees ORDER BY id " + ("DESC" if newest_first else "ASC"))
         return rows
@@ -164,6 +169,9 @@ class SheetsStore:
 
     def set_email_status(self, token, status):
         self._call("setstatus", token=token, status=status)
+
+    def delete(self, aid):
+        return bool(self._call("delete", id=aid).get("ok"))
 
     def list(self, newest_first=True):
         rows = self._call("list").get("rows", [])

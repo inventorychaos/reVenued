@@ -47,8 +47,10 @@ function handle(d) {
   }
   if (d.action === 'add') {
     for (i = 1; i < n; i++) if (data[i][3] === d.email) return { ok: false, error: 'duplicate' };
-    sh.appendRow([n, d.token, d.full_name, d.email, d.organization, d.phone, d.registered_at, '0', '', 'pending']);
-    return { ok: true, id: n };
+    var next = 1;                                   // unique among current rows (the newest id can be reused after a delete)
+    for (i = 1; i < n; i++) next = Math.max(next, Number(data[i][0]) + 1);
+    sh.appendRow([next, d.token, d.full_name, d.email, d.organization, d.phone, d.registered_at, '0', '', 'pending']);
+    return { ok: true, id: next };
   }
   if (d.action === 'list') return { ok: true, rows: data.slice(1).map(toObj) };
   var k = find();
@@ -63,6 +65,11 @@ function handle(d) {
   if (d.action === 'manual') {
     if (k < 0) return { ok: false };
     sh.getRange(k + 1, 8, 1, 2).setValues([['1', String(data[k][8]) || d.now]]);
+    return { ok: true };
+  }
+  if (d.action === 'delete') {
+    if (k < 0) return { ok: false };
+    sh.deleteRow(k + 1);
     return { ok: true };
   }
   if (d.action === 'setstatus') {

@@ -17,7 +17,8 @@ or USB scanner) to verify the attendee and check them in. Organizers get an admi
   present it to the host at check-in
 - **Check-in scanner**: phone/tablet camera, USB or Bluetooth barcode scanner, or paste a code; scanning a ticket twice is
   reported as already used. A "verify only" mode looks up a ticket without checking anyone in
-- **Admin dashboard**: live counts, search, resend a ticket email, manual check-in for lost QR codes, CSV export
+- **Admin dashboard**: live counts, search, resend a ticket email, manual check-in for lost QR codes, delete an attendee
+  (with a confirmation; their ticket stops working at once), CSV export
 - **Abuse protection**: per-IP rate limits, a honeypot field, request-size cap, and lock-out after repeated wrong admin keys
 - **Flexible storage**: SQLite (default, zero setup), any hosted PostgreSQL (Neon, Supabase, Render...), or Google Sheets
 - **Lightweight front end**: three static pages and a ~3 KB stylesheet, no frameworks, can be hosted on GitHub Pages
@@ -130,6 +131,7 @@ Only use `*` when the app is reachable solely through the host's proxy. Check wh
 | `GET /api/attendees`, `GET /api/attendees.csv` | admin key | List / export attendees |
 | `POST /api/resend/<id>` | admin key | Resend a ticket email |
 | `POST /api/manual-checkin/<id>` | admin key | Check in without a QR code |
+| `POST /api/delete/<id>` | admin key | Permanently delete an attendee (ticket stops working; the email can register again) |
 | `GET /healthz` | public | Health check |
 
 The admin key is sent in the `X-Admin-Key` header.

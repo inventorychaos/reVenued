@@ -389,6 +389,16 @@ def resend(attendee_id):
     return jsonify(ok=not status.startswith("failed"), email_status=status)
 
 
+@app.post("/api/delete/<int:attendee_id>")
+def delete_attendee(attendee_id):
+    """Permanently delete an attendee (admin only). Their QR ticket stops working immediately."""
+    require_admin()
+    if not store.delete(attendee_id):
+        abort(404)
+    app.logger.info("attendee %s deleted via admin", attendee_id)
+    return jsonify(ok=True)
+
+
 @app.post("/api/manual-checkin/<int:attendee_id>")
 def manual_checkin(attendee_id):
     """Fallback for attendees who lost their QR code."""

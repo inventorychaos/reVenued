@@ -59,7 +59,8 @@ function render() {
       '<td class="' + (a.checked_in ? 'in' : 'out') + '">' + (a.checked_in ? 'Checked in ' + esc(a.checked_in_at) : 'Not yet') + '</td>' +
       '<td title="' + esc(a.email_status) + '">' + esc(String(a.email_status).split(':')[0]) + '</td>' +
       '<td><button class="alt" data-act="resend" data-id="' + a.id + '">Resend</button> ' +
-      (a.checked_in ? '' : '<button class="alt" data-act="manual" data-id="' + a.id + '">Check in</button>') + '</td></tr>';
+      (a.checked_in ? '' : '<button class="alt" data-act="manual" data-id="' + a.id + '">Check in</button> ') +
+      '<button class="alt danger" data-act="delete" data-id="' + a.id + '">Delete</button></td></tr>';
   }).join('');
 }
 document.getElementById('rows').addEventListener('click', function (e) {
@@ -68,6 +69,13 @@ document.getElementById('rows').addEventListener('click', function (e) {
   if (b.getAttribute('data-act') === 'resend') {
     fetch(API + '/api/resend/' + id, { method: 'POST', headers: H() }).then(function (r) { return r.json(); })
       .then(function (j) { alert(j.ok ? 'Email: ' + String(j.email_status).split(':')[0] : 'Failed: ' + j.email_status); load(); });
+  } else if (b.getAttribute('data-act') === 'delete') {
+    var a = data.filter(function (x) { return String(x.id) === id; })[0] || {};
+    if (!confirm('Permanently delete ' + (a.full_name || 'this attendee') + ' (' + (a.email || '') + ')?\n\nTheir QR ticket will stop working and this cannot be undone.')) return;
+    fetch(API + '/api/delete/' + id, { method: 'POST', headers: H() }).then(function (r) {
+      if (!r.ok) alert(r.status === 404 ? 'Already deleted.' : r.status === 429 ? 'Too many requests. Wait a moment.' : 'Could not delete (error ' + r.status + ').');
+      load();
+    });
   } else if (confirm('Check in without a QR scan?')) {
     fetch(API + '/api/manual-checkin/' + id, { method: 'POST', headers: H() }).then(load);
   }
