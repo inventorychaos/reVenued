@@ -197,7 +197,8 @@ def require_admin():
         abort(too_many(retry))
     key = request.headers.get("X-Admin-Key") or request.args.get("key", "")
     if not hmac.compare_digest(key.encode(), ADMIN_KEY.encode()):
-        limiter.hit("authfail:" + ip)
+        if key:   # a missing key is not a guess, so it must not count toward the lock-out
+            limiter.hit("authfail:" + ip)
         abort(401)
 
 

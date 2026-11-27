@@ -107,6 +107,8 @@ def run(label):
     assert rows[0]["checked_in"] == 1 and "token" not in rows[0]
     for page in ("/", "/scanner", "/admin", "/style.css", "/config.js", "/index.html"):
         assert c.get(page).status_code == 200, page
+    adm = c.get("/admin").data.decode()
+    assert 'type="search"' in adm and "setInterval(function () { if (!paused)" in adm   # no autofill, no self-lockout polling
     assert b"EVENT_NAME" in c.get("/config.js").data
     assert c.get("/healthz").data == b"ok"
     css = c.get("/style.css").data.decode().lower()
@@ -262,6 +264,9 @@ A.limiter = RateLimiter(); A.RATES["authfail"] = (3, 600)
 assert [c.get("/api/attendees", headers={"X-Admin-Key": "bad"}).status_code for _ in range(4)] == [401, 401, 401, 429]
 assert c.get("/api/attendees", headers=H).status_code == 429           # even the right key is locked out for now
 assert c.get("/api/attendees", headers=H, environ_overrides={"REMOTE_ADDR": "7.7.7.7"}).status_code == 200
+A.limiter = RateLimiter()
+assert [c.get("/api/attendees").status_code for _ in range(6)] == [401] * 6   # no key at all: never locks out
+assert c.get("/api/attendees", headers=H).status_code == 200
 A.RATES["authfail"] = (100000, 60)
 
 A.limiter = RateLimiter()

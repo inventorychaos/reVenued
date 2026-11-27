@@ -12,8 +12,8 @@
 <header><h1 id="ev">Admin</h1><nav><a href="index.html">Register</a><a href="scanner.html">Scanner</a></nav></header>
 <main class="wide">
   <div class="row">
-    <input id="key" type="password" placeholder="Admin key" aria-label="Admin key" autocomplete="off">
-    <input id="q" placeholder="Search name, email, organization" aria-label="Search">
+    <input id="key" name="adminkey" type="password" placeholder="Admin key" aria-label="Admin key" autocomplete="new-password">
+    <input id="q" name="filter" type="search" placeholder="Search name, email, organization" aria-label="Search" autocomplete="off">
     <button id="csv" class="alt">Export CSV</button>
   </div>
   <div class="stats">
@@ -31,14 +31,19 @@ var API = CONFIG.API_BASE, keyEl = document.getElementById('key'), q = document.
 document.title = 'Admin: ' + CONFIG.EVENT_NAME;
 document.getElementById('ev').textContent = 'Admin: ' + CONFIG.EVENT_NAME;
 try { keyEl.value = localStorage.getItem('adminKey') || ''; } catch (e) {}
-keyEl.addEventListener('change', function () { try { localStorage.setItem('adminKey', keyEl.value); } catch (e) {} load(); });
+keyEl.addEventListener('change', function () { try { localStorage.setItem('adminKey', keyEl.value); } catch (e) {} paused = false; load(); });
 q.addEventListener('input', render);
+q.value = '';   // never keep an autofilled value in the search filter
+var paused = false;   // stop auto-refresh after a rejected key, so the page can't lock itself out
 function H() { return { 'X-Admin-Key': keyEl.value }; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
 function load() {
+  if (!keyEl.value) { document.getElementById('rows').innerHTML = '<tr><td colspan="8">Enter the admin key.</td></tr>'; return; }
   fetch(API + '/api/attendees', { headers: H() }).then(function (r) {
-    if (!r.ok) { document.getElementById('rows').innerHTML = '<tr><td colspan="8">' + (r.status === 429 ? 'Too many attempts. Wait a few minutes.' : 'Enter the correct admin key.') + '</td></tr>'; return; }
+    if (!r.ok) {
+      if (r.status === 401 || r.status === 429) paused = true;   // don't keep retrying with a bad key
+      document.getElementById('rows').innerHTML = '<tr><td colspan="8">' + (r.status === 429 ? 'Too many attempts. Wait a few minutes, then re-enter the key.' : 'Wrong admin key. Re-enter it.') + '</td></tr>'; return; }
     return r.json().then(function (j) { data = j; render(); });
   }).catch(function () { document.getElementById('rows').innerHTML = '<tr><td colspan="8">Cannot reach the server.</td></tr>'; });
 }
@@ -73,7 +78,7 @@ document.getElementById('csv').onclick = function () {
     return r.blob().then(function (b) { var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'attendees.csv'; a.click(); });
   });
 };
-load(); setInterval(load, 10000);
+load(); setInterval(function () { if (!paused) load(); }, 10000);
 </script>
 </body>
 </html>

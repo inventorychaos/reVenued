@@ -12,7 +12,7 @@
 <header><h1 id="ev">Check-in</h1><nav><a href="index.html">Register</a><a href="admin.html">Admin</a></nav></header>
 <main>
   <label for="key">Admin key</label>
-  <input id="key" type="password" autocomplete="off">
+  <input id="key" name="adminkey" type="password" autocomplete="new-password">
   <div id="reader"></div>
   <label for="manual">USB scanner or paste a code, then press Enter</label>
   <input id="manual" autocomplete="off" autofocus>
@@ -54,6 +54,7 @@ function submit(token) {
     .then(function () { busy = false; refresh(); });
 }
 function refresh() {
+  if (!keyEl.value) return;   // no key yet: don't send a request that can only fail
   fetch(API + '/api/attendees', { headers: { 'X-Admin-Key': keyEl.value } }).then(function (r) { return r.ok ? r.json() : null; })
     .then(function (a) { if (a) document.getElementById('count').textContent = a.filter(function (x) { return x.checked_in; }).length + ' of ' + a.length + ' checked in'; })
     .catch(function () {});
